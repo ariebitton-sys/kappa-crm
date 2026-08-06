@@ -313,7 +313,55 @@ function Kpi({ icon, tint, label, value }) {
 // ============ Pipeline ============
 function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
+  const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
+
+  // pointer-based drag (RTL-safe, works everywhere)
+  useEffect(() => {
+    if (!drag) return;
+    const onMoveEvt = (e) => {
+      const x = e.clientX, y = e.clientY;
+      setDrag((d) => (d ? { ...d, x, y } : d));
+      // find column under pointer
+      const el = document.elementFromPoint(x, y);
+      const col = el && el.closest ? el.closest("[data-stage]") : null;
+      setOverStage(col ? col.getAttribute("data-stage") : null);
+    };
+    const onUp = () => {
+      setDrag((d) => {
+        if (d && overStageRef.current && overStageRef.current !== d.lead.stage) {
+          onMove(String(d.id), overStageRef.current);
+        }
+        return null;
+      });
+      setOverStage(null);
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", onMoveEvt);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMoveEvt);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [drag, onMove]);
+
+  // keep latest overStage in a ref for the pointerup handler
+  const overStageRef = React.useRef(null);
+  useEffect(() => { overStageRef.current = overStage; }, [overStage]);
+
+  const startDrag = (e, lead) => {
+    if (e.button != null && e.button !== 0) return; // left only
+    const target = e.currentTarget || e.target;
+    const rect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : { width: 240, left: e.clientX - 120, top: e.clientY - 20 };
+    document.body.style.userSelect = "none";
+    setDrag({
+      id: lead.id, lead,
+      x: e.clientX, y: e.clientY,
+      w: rect.width,
+      offX: e.clientX - rect.left,
+      offY: e.clientY - rect.top,
+    });
+  };
 
   return (
     <div>
@@ -337,19 +385,10 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
           {STAGES.map((stage) => {
             const items = leads.filter((l) => l.stage === stage.id);
             const sum = items.reduce((s, l) => s + (Number(l.amount) || 0), 0);
-            const isOver = overStage === stage.id;
+            const isOver = overStage === stage.id && drag;
             return (
-              <div key={stage.id} className="col"
-                style={{ ...styles.col, background: isOver ? stage.soft : "#EFF2F6", outline: isOver ? `2px dashed ${stage.color}` : "none" }}
-                onDragEnter={(e) => { e.preventDefault(); setOverStage(stage.id); }}
-                onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-                onDragLeave={(e) => { if (e.currentTarget === e.target) setOverStage(null); }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const id = dragId ?? e.dataTransfer.getData("text/plain");
-                  if (id) onMove(String(id), stage.id);
-                  setDragId(null); setOverStage(null);
-                }}>
+              <div key={stage.id} className="col" data-stage={stage.id}
+                style={{ ...styles.col, background: isOver ? stage.soft : "#EFF2F6", outline: isOver ? `2px dashed ${stage.color}` : "none" }}>
                 <div style={styles.colHead}>
                   <span style={{ ...styles.colDot, background: stage.color }} />
                   <span style={styles.colTitle}>{stage.label}</span>
@@ -358,10 +397,10 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
                 {sum > 0 && <div style={styles.colSum}>{fmtMoney(sum)}</div>}
                 <div style={styles.colBody}>
                   {items.map((l) => (
-                    <LeadCard key={l.id} lead={l} stage={stage} onClick={() => onOpen(l)}
-                      onDragStart={(e) => { setDragId(l.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(l.id)); }}
-                      onDragEnd={() => { setDragId(null); setOverStage(null); }}
-                      dragging={dragId === l.id} />
+                    <LeadCard key={l.id} lead={l} stage={stage}
+                      onClick={() => onOpen(l)}
+                      onPointerDown={(e) => startDrag(e, l)}
+                      dragging={drag && drag.id === l.id} />
                   ))}
                   {items.length === 0 && <div style={styles.emptyCol}>גרור לכאן</div>}
                 </div>
@@ -371,6 +410,21 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
         </div>
       ) : (
         <ListView leads={leads} onOpen={onOpen} onMove={onMove} />
+      )}
+
+      {drag && (
+        <div style={{
+          position: "fixed", left: drag.x - drag.offX, top: drag.y - drag.offY,
+          width: drag.w, pointerEvents: "none", zIndex: 999, opacity: 0.92,
+          transform: "rotate(2deg)", boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
+        }}>
+          <div style={{ ...styles.leadCard, borderRightColor: stageOf(drag.lead.stage).color, background: "#fff" }}>
+            <div style={styles.leadCardTop}>
+              <div style={{ ...styles.avatarSm, background: stageOf(drag.lead.stage).soft, color: stageOf(drag.lead.stage).color }}>{initials(drag.lead.name)}</div>
+              <span style={styles.leadName}>{drag.lead.name}</span>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -423,11 +477,39 @@ function ListView({ leads, onOpen, onMove }) {
   );
 }
 
-function LeadCard({ lead, stage, onClick, onDragStart, onDragEnd, dragging }) {
+function LeadCard({ lead, stage, onClick, onPointerDown, dragging }) {
   const due = isDue(lead.next_call);
+  const startRef = React.useRef(null);
+  const movedRef = React.useRef(false);
+
+  const handleDown = (e) => {
+    startRef.current = { x: e.clientX, y: e.clientY };
+    movedRef.current = false;
+    // begin tracking; actual drag starts after small movement threshold
+    const onMove = (ev) => {
+      if (!startRef.current) return;
+      const dx = Math.abs(ev.clientX - startRef.current.x);
+      const dy = Math.abs(ev.clientY - startRef.current.y);
+      if (dx > 5 || dy > 5) {
+        movedRef.current = true;
+        window.removeEventListener("pointermove", onMove);
+        onPointerDown(e); // hand off to Pipeline's drag
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      startRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const handleClick = () => { if (!movedRef.current) onClick(); };
+
   return (
-    <div className="lead-card" draggable onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onClick}
-      style={{ ...styles.leadCard, opacity: dragging ? 0.4 : 1, borderRightColor: stage.color }}>
+    <div className="lead-card" onPointerDown={handleDown} onClick={handleClick}
+      style={{ ...styles.leadCard, opacity: dragging ? 0.35 : 1, borderRightColor: stage.color, touchAction: "none" }}>
       <div style={styles.leadCardTop}>
         <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
         <span style={styles.leadName}>{lead.name}</span>
