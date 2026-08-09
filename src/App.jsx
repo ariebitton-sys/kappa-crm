@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Plus, X, Phone, Mail, Search,
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
-  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List
+  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical
 } from "lucide-react";
 
 // ============ API ============
@@ -163,7 +163,7 @@ export default function App() {
 
       <aside style={styles.sidebar}>
         <div style={styles.brand}>
-          <div style={styles.brandMark}>K</div>
+          <div style={styles.brandMark}><img src="/logo.jpg" alt="Kappa" style={styles.brandLogo} /></div>
           <div><div style={styles.brandName}>Kappa</div><div style={styles.brandSub}>ניהול משקיעים</div></div>
         </div>
         <nav style={styles.nav}>
@@ -409,7 +409,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
           })}
         </div>
       ) : (
-        <ListView leads={leads} onOpen={onOpen} onMove={onMove} />
+        <ListView leads={leads} onOpen={onOpen} onMove={onMove} startDrag={startDrag} drag={drag} overStage={overStage} />
       )}
 
       {drag && (
@@ -430,15 +430,21 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
   );
 }
 
-function ListView({ leads, onOpen, onMove }) {
+function ListView({ leads, onOpen, onMove, startDrag, drag, overStage }) {
   return (
     <div style={styles.listWrap}>
       {STAGES.map((stage) => {
         const items = leads.filter((l) => l.stage === stage.id);
-        if (items.length === 0) return null;
         const sum = items.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+        const isOver = drag && overStage === stage.id && drag.lead.stage !== stage.id;
+        // Empty groups still render (thin drop zone) so leads can be dragged into them
         return (
-          <div key={stage.id} style={styles.listGroup}>
+          <div key={stage.id} data-stage={stage.id}
+            style={{
+              ...styles.listGroup,
+              outline: isOver ? `2px dashed ${stage.color}` : "none",
+              background: isOver ? stage.soft : "#fff",
+            }}>
             <div style={styles.listGroupHead}>
               <span style={{ ...styles.colDot, background: stage.color }} />
               <span style={styles.listGroupTitle}>{stage.label}</span>
@@ -448,31 +454,73 @@ function ListView({ leads, onOpen, onMove }) {
             <div style={styles.listRows}>
               {items.map((l) => {
                 const due = isDue(l.next_call);
+                const dragging = drag && drag.id === l.id;
                 return (
-                  <div key={l.id} className="list-row" style={styles.listRow}>
-                    <button style={styles.listMain} onClick={() => onOpen(l)}>
-                      <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(l.name)}</div>
-                      <div style={{ minWidth: 140, textAlign: "right" }}>
-                        <div style={styles.leadName}>{l.name}</div>
-                        <div style={styles.recentMeta}>{l.campaign || "—"}</div>
-                      </div>
-                    </button>
-                    <div style={styles.listMeta}>
-                      {Number(l.amount) > 0 && <span style={styles.leadTag}><DollarSign size={11} />{Math.round(Number(l.amount) / 1000)}K</span>}
-                      {l.track && <span style={styles.leadTag}>{l.track}</span>}
-                      {l.stage === "lost" && l.lost_reason && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{l.lost_reason}</span>}
-                      {l.next_call && <span style={{ ...styles.leadCall, color: due ? "#EF4444" : "#94A3B8" }}><Clock size={11} /> {l.next_call}</span>}
-                    </div>
-                    <select value={l.stage} onChange={(e) => onMove(l.id, e.target.value)} style={styles.stageSelect} onClick={(e) => e.stopPropagation()}>
-                      {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-                    </select>
-                  </div>
+                  <ListRow key={l.id} lead={l} stage={stage} due={due} dragging={dragging}
+                    onOpen={onOpen} onMove={onMove} startDrag={startDrag} />
                 );
               })}
+              {items.length === 0 && <div style={styles.listEmpty}>גרור לכאן</div>}
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// A single draggable list row. Uses a small movement threshold so a plain
+// click still opens the drawer and the <select> still works — drag only
+// starts once the pointer actually moves.
+function ListRow({ lead, stage, due, dragging, onOpen, onMove, startDrag }) {
+  const startRef = React.useRef(null);
+  const movedRef = React.useRef(false);
+
+  const handleDown = (e) => {
+    if (e.button != null && e.button !== 0) return;
+    startRef.current = { x: e.clientX, y: e.clientY };
+    movedRef.current = false;
+    const onMoveEvt = (ev) => {
+      if (!startRef.current) return;
+      const dx = Math.abs(ev.clientX - startRef.current.x);
+      const dy = Math.abs(ev.clientY - startRef.current.y);
+      if (dx > 5 || dy > 5) {
+        movedRef.current = true;
+        window.removeEventListener("pointermove", onMoveEvt);
+        startDrag(e, lead); // hand off to Pipeline's shared drag engine
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMoveEvt);
+      window.removeEventListener("pointerup", onUp);
+      startRef.current = null;
+    };
+    window.addEventListener("pointermove", onMoveEvt);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  return (
+    <div className="list-row" style={{ ...styles.listRow, opacity: dragging ? 0.35 : 1, touchAction: "none" }}>
+      <button style={styles.listDragHandle} onPointerDown={handleDown} title="גרור כדי להעביר שלב" aria-label="גרור">
+        <GripVertical size={16} color="#CBD5E1" />
+      </button>
+      <button style={styles.listMain} onPointerDown={handleDown}
+        onClick={() => { if (!movedRef.current) onOpen(lead); }}>
+        <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
+        <div style={{ minWidth: 140, textAlign: "right" }}>
+          <div style={styles.leadName}>{lead.name}</div>
+          <div style={styles.recentMeta}>{lead.campaign || "—"}</div>
+        </div>
+      </button>
+      <div style={styles.listMeta}>
+        {Number(lead.amount) > 0 && <span style={styles.leadTag}><DollarSign size={11} />{Math.round(Number(lead.amount) / 1000)}K</span>}
+        {lead.track && <span style={styles.leadTag}>{lead.track}</span>}
+        {lead.stage === "lost" && lead.lost_reason && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{lead.lost_reason}</span>}
+        {lead.next_call && <span style={{ ...styles.leadCall, color: due ? "#EF4444" : "#94A3B8" }}><Clock size={11} /> {lead.next_call}</span>}
+      </div>
+      <select value={lead.stage} onChange={(e) => onMove(lead.id, e.target.value)} style={styles.stageSelect} onClick={(e) => e.stopPropagation()}>
+        {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+      </select>
     </div>
   );
 }
@@ -821,7 +869,8 @@ const styles = {
   app: { display: "flex", height: "100vh", fontFamily: FONT, background: "#F4F6F9", color: KAPPA.ink, direction: "rtl" },
   sidebar: { width: 240, background: "#1E2329", display: "flex", flexDirection: "column", padding: "22px 16px", flexShrink: 0 },
   brand: { display: "flex", alignItems: "center", gap: 12, marginBottom: 32, padding: "0 6px" },
-  brandMark: { width: 40, height: 40, borderRadius: 11, background: `linear-gradient(135deg, ${KAPPA.teal}, ${KAPPA.tealDark})`, display: "grid", placeItems: "center", color: "#fff", fontWeight: 800, fontSize: 20 },
+  brandMark: { width: 40, height: 40, borderRadius: 11, background: "#fff", display: "grid", placeItems: "center", overflow: "hidden", flexShrink: 0 },
+  brandLogo: { width: "100%", height: "100%", objectFit: "contain", padding: 4, boxSizing: "border-box" },
   brandName: { color: "#fff", fontWeight: 800, fontSize: 17, lineHeight: 1 },
   brandSub: { color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 3 },
   nav: { display: "flex", flexDirection: "column", gap: 4, flex: 1 },
@@ -872,6 +921,8 @@ const styles = {
   listMain: { display: "flex", alignItems: "center", gap: 11, border: "none", background: "transparent", cursor: "pointer", fontFamily: FONT, padding: 0, flex: "0 0 auto" },
   listMeta: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1 },
   stageSelect: { border: "1.5px solid #E2E8F0", borderRadius: 8, padding: "7px 10px", fontSize: 13, fontWeight: 600, fontFamily: FONT, color: KAPPA.ink, background: "#fff", cursor: "pointer", flexShrink: 0 },
+  listDragHandle: { display: "grid", placeItems: "center", border: "none", background: "transparent", cursor: "grab", padding: 4, flexShrink: 0, touchAction: "none" },
+  listEmpty: { padding: "14px 18px", fontSize: 13, color: "#B6C2CE", textAlign: "center", fontWeight: 600 },
   col: { width: 264, flexShrink: 0, background: "#EFF2F6", borderRadius: 14, padding: 10, maxHeight: "calc(100vh - 210px)", display: "flex", flexDirection: "column" },
   colHead: { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 4px" },
   colDot: { width: 9, height: 9, borderRadius: "50%" },
