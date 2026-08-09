@@ -163,8 +163,7 @@ export default function App() {
 
       <aside style={styles.sidebar}>
         <div style={styles.brand}>
-          <div style={styles.brandMark}><img src="/logo.jpg" alt="Kappa" style={styles.brandLogo} /></div>
-          <div><div style={styles.brandName}>Kappa</div><div style={styles.brandSub}>ניהול משקיעים</div></div>
+          <div style={styles.brandLogoWrap}><img src="/Logo.jpg" alt="Kappa Real Estate Investments" style={styles.brandLogoImg} /></div>
         </div>
         <nav style={styles.nav}>
           <NavItem icon={<LayoutDashboard size={19} />} label="סקירה" active={view === "dashboard"} onClick={() => setView("dashboard")} />
@@ -869,8 +868,8 @@ const styles = {
   app: { display: "flex", height: "100vh", fontFamily: FONT, background: "#F4F6F9", color: KAPPA.ink, direction: "rtl" },
   sidebar: { width: 240, background: "#1E2329", display: "flex", flexDirection: "column", padding: "22px 16px", flexShrink: 0 },
   brand: { display: "flex", alignItems: "center", gap: 12, marginBottom: 32, padding: "0 6px" },
-  brandMark: { width: 40, height: 40, borderRadius: 11, background: "#fff", display: "grid", placeItems: "center", overflow: "hidden", flexShrink: 0 },
-  brandLogo: { width: "100%", height: "100%", objectFit: "contain", padding: 4, boxSizing: "border-box" },
+  brandLogoWrap: { width: "100%", background: "#fff", borderRadius: 12, padding: "12px 14px", boxSizing: "border-box", display: "grid", placeItems: "center" },
+  brandLogoImg: { width: "100%", maxWidth: 150, height: "auto", objectFit: "contain", display: "block" },
   brandName: { color: "#fff", fontWeight: 800, fontSize: 17, lineHeight: 1 },
   brandSub: { color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 3 },
   nav: { display: "flex", flexDirection: "column", gap: 4, flex: 1 },
