@@ -91,6 +91,19 @@ const isDue = (d) => {
   const p = (s) => { const [dd, mm, yy] = s.split("/").map(Number); return new Date(yy, mm - 1, dd); };
   try { return p(d) <= new Date(); } catch { return false; }
 };
+// dd/mm/yyyy  ->  yyyy-mm-dd  (what <input type=date> needs)
+const dmyToISO = (s) => {
+  const d = parseDMY(s);
+  if (!d) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+// yyyy-mm-dd  ->  dd/mm/yyyy  (what the sheet + logic store)
+const isoToDMY = (s) => {
+  if (!s) return "";
+  const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "";
+};
 
 // ============================================================
 export default function App() {
@@ -869,10 +882,10 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
             </div>
             <InvestmentsEditor rows={invRows} onChange={setInvRows} />
             <div style={styles.fieldRow}>
-              <Field label="מועד פגישה"><input style={styles.input} value={f.meeting_date || ""} onChange={(e) => set("meeting_date", e.target.value)} placeholder="dd/mm/yyyy" dir="ltr" /></Field>
-              <Field label="קשר אחרון"><input style={styles.input} value={f.last_contact || ""} onChange={(e) => set("last_contact", e.target.value)} placeholder="dd/mm/yyyy" dir="ltr" /></Field>
+              <DateField label="מועד פגישה" value={f.meeting_date || ""} onChange={(v) => set("meeting_date", v)} />
+              <DateField label="קשר אחרון" value={f.last_contact || ""} onChange={(v) => set("last_contact", v)} />
             </div>
-            <Field label="מועד שיחה הבאה"><input style={styles.input} value={f.next_call || ""} onChange={(e) => set("next_call", e.target.value)} placeholder="dd/mm/yyyy" dir="ltr" /></Field>
+            <DateField label="מועד שיחה הבאה" value={f.next_call || ""} onChange={(v) => set("next_call", v)} />
             <Field label="סיכום שיחה"><textarea style={{ ...styles.input, minHeight: 100, resize: "vertical" }} value={f.summary || ""} onChange={(e) => set("summary", e.target.value)} /></Field>
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
               <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={save}>{saving ? "שומר…" : "שמור שינויים"}</button>
@@ -1010,7 +1023,7 @@ function AddLead({ onClose, onSave }) {
             </Field>
           </div>
           <div style={styles.fieldRow}>
-            <Field label="מועד שיחה הבאה"><input style={styles.input} value={f.next_call} onChange={(e) => set("next_call", e.target.value)} placeholder="dd/mm/yyyy" dir="ltr" /></Field>
+            <DateField label="מועד שיחה הבאה" value={f.next_call} onChange={(v) => set("next_call", v)} />
             <Field label="שלב">
               <select style={styles.input} value={f.stage} onChange={(e) => set("stage", e.target.value)}>
                 {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
@@ -1029,6 +1042,21 @@ function AddLead({ onClose, onSave }) {
 }
 function Field({ label, children }) {
   return <div style={styles.field}><label style={styles.fieldLabel}>{label}</label>{children}</div>;
+}
+
+// Native date picker that stores/reads dd/mm/yyyy so the sheet + logic stay unchanged.
+function DateField({ label, value, onChange }) {
+  return (
+    <Field label={label}>
+      <input
+        type="date"
+        style={{ ...styles.input, minHeight: 44 }}
+        value={dmyToISO(value)}
+        onChange={(e) => onChange(isoToDMY(e.target.value))}
+        dir="ltr"
+      />
+    </Field>
+  );
 }
 
 // ============ CSS ============
