@@ -106,8 +106,23 @@ const isoToDMY = (s) => {
 };
 
 // ============================================================
+// Track viewport width so we can swap layouts on mobile.
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= breakpoint : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= breakpoint);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
+
+// ============================================================
 export default function App() {
   const [leads, setLeads] = useState([]);
+  const isMobile = useIsMobile();
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [view, setView] = useState("dashboard");
   const [selected, setSelected] = useState(null);
@@ -209,38 +224,40 @@ export default function App() {
   };
 
   return (
-    <div dir="rtl" style={styles.app}>
+    <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
 
-      <aside style={styles.sidebar}>
-        <div style={styles.brand}>
-          <div style={styles.brandLogoWrap}><img src="/Logo.jpg" alt="Kappa Real Estate Investments" style={styles.brandLogoImg} /></div>
-        </div>
-        <nav style={styles.nav}>
-          <NavItem icon={<LayoutDashboard size={19} />} label="סקירה" active={view === "dashboard"} onClick={() => setView("dashboard")} />
-          <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
-          <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
-        </nav>
-        <div style={styles.sidebarFoot}>
-          <button style={styles.addBtn} onClick={() => setAdding(true)}><Plus size={18} /> ליד חדש</button>
-        </div>
-      </aside>
+      {!isMobile && (
+        <aside style={styles.sidebar}>
+          <div style={styles.brand}>
+            <div style={styles.brandLogoWrap}><img src="/Logo.jpg" alt="Kappa Real Estate Investments" style={styles.brandLogoImg} /></div>
+          </div>
+          <nav style={styles.nav}>
+            <NavItem icon={<LayoutDashboard size={19} />} label="סקירה" active={view === "dashboard"} onClick={() => setView("dashboard")} />
+            <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
+            <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
+          </nav>
+          <div style={styles.sidebarFoot}>
+            <button style={styles.addBtn} onClick={() => setAdding(true)}><Plus size={18} /> ליד חדש</button>
+          </div>
+        </aside>
+      )}
 
-      <main style={styles.main}>
-        <header style={styles.topbar}>
+      <main style={{ ...styles.main, ...(isMobile ? styles.mainMobile : {}) }}>
+        <header style={{ ...styles.topbar, ...(isMobile ? styles.topbarMobile : {}) }}>
           <div style={styles.searchWrap}>
             <Search size={18} color="#94A3B8" />
-            <input style={styles.search} placeholder="חיפוש לפי שם, טלפון, אימייל, מפנה…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <input style={styles.search} placeholder={isMobile ? "חיפוש…" : "חיפוש לפי שם, טלפון, אימייל, מפנה…"} value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
           <button style={styles.refreshBtn} onClick={loadLeads} title="רענן">
             <RefreshCw size={16} className={status === "loading" ? "spin" : ""} />
           </button>
           {stats.dueCalls > 0 && (
-            <div style={styles.dueBadge}><CalendarClock size={16} /> {stats.dueCalls} שיחות להיום</div>
+            <div style={{ ...styles.dueBadge, ...(isMobile ? styles.dueBadgeMobile : {}) }}><CalendarClock size={16} />{isMobile ? ` ${stats.dueCalls}` : ` ${stats.dueCalls} שיחות להיום`}</div>
           )}
         </header>
 
-        <div style={styles.content}>
+        <div style={{ ...styles.content, ...(isMobile ? styles.contentMobile : {}) }}>
           {status === "loading" && <Loading />}
           {status === "error" && <ErrorState onRetry={loadLeads} />}
           {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} />}
@@ -252,6 +269,17 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {isMobile && (
+        <>
+          <button style={styles.fab} onClick={() => setAdding(true)} aria-label="ליד חדש"><Plus size={26} /></button>
+          <nav style={styles.bottomNav}>
+            <BottomNavItem icon={<LayoutDashboard size={22} />} label="סקירה" active={view === "dashboard"} onClick={() => setView("dashboard")} />
+            <BottomNavItem icon={<Users size={22} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
+            <BottomNavItem icon={<Target size={22} />} label="ליווי" active={view === "journey"} onClick={() => setView("journey")} />
+          </nav>
+        </>
+      )}
 
       {selected && (
         <LeadDrawer lead={selected} onClose={() => setSelected(null)}
@@ -299,6 +327,18 @@ function NavItem({ icon, label, active, onClick }) {
   );
 }
 
+function BottomNavItem({ icon, label, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      ...styles.bottomNavItem,
+      color: active ? KAPPA.teal : "#94A3B8",
+    }}>
+      {icon}
+      <span style={{ fontSize: 11, fontWeight: active ? 700 : 600 }}>{label}</span>
+    </button>
+  );
+}
+
 // ============ Dashboard ============
 function Dashboard({ stats, leads, onOpen }) {
   const recent = leads.slice(0, 6);
@@ -319,13 +359,13 @@ function Dashboard({ stats, leads, onOpen }) {
     <div>
       <h1 style={styles.pageTitle}>סקירה כללית</h1>
       <p style={styles.pageSub}>תמונת מצב של צנרת המשקיעים</p>
-      <div style={styles.kpiRow}>
+      <div style={styles.kpiRow} className="kpi-row">
         <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים פעילים" value={stats.total} />
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} />
         <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="פוטנציאל בצנרת" value={fmtMoney(stats.pipeline)} />
         <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="התחייבו / סגרו" value={fmtMoney(stats.committed)} />
       </div>
-      <div style={styles.dashGrid}>
+      <div style={styles.dashGrid} className="dash-grid">
         <div style={styles.card}>
           <div style={styles.cardHead}><h3 style={styles.cardTitle}>פילוח לפי שלב</h3></div>
           <div style={{ padding: "8px 4px" }}>
@@ -358,7 +398,7 @@ function Dashboard({ stats, leads, onOpen }) {
           </div>
         </div>
       </div>
-      <div style={styles.dashGrid}>
+      <div style={styles.dashGrid} className="dash-grid">
         <CallList title="שיחות שעבר זמנן" tint="#EF4444" items={overdue} emptyText="אין שיחות באיחור 🎉" onOpen={onOpen} />
         <CallList title="שיחות קרובות" tint={KAPPA.teal} items={upcoming} emptyText="אין שיחות מתוזמנות" onOpen={onOpen} />
       </div>
@@ -781,7 +821,7 @@ function InvestmentsEditor({ rows, onChange }) {
         return (
           <div key={i} style={styles.invRow}>
             <div style={styles.invRowTop}>
-              <select style={{ ...styles.input, flex: 1 }} value={r.track} onChange={(e) => update(i, { track: e.target.value })}>
+              <select style={{ ...styles.input, flex: "1 1 120px", minWidth: 0 }} value={r.track} onChange={(e) => update(i, { track: e.target.value })}>
                 <option value="">בחר מסלול…</option>
                 {TRACKS.map((t) => <option key={t}>{t}</option>)}
               </select>
@@ -861,7 +901,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
   if (editing) {
     return (
       <div style={styles.overlay} onClick={cancel}>
-        <div style={styles.drawer} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.drawer} className="lead-drawer" onClick={(e) => e.stopPropagation()}>
           <div style={styles.drawerHead}>
             <button style={styles.iconBtn} onClick={cancel}><X size={20} /></button>
             <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>עריכת ליד</h3>
@@ -900,7 +940,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
   // ---------- VIEW MODE ----------
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.drawer} onClick={(e) => e.stopPropagation()}>
+      <div style={styles.drawer} className="lead-drawer" onClick={(e) => e.stopPropagation()}>
         <div style={styles.drawerHead}>
           <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -995,7 +1035,7 @@ function AddLead({ onClose, onSave }) {
   };
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.drawer} onClick={(e) => e.stopPropagation()}>
+      <div style={styles.drawer} className="lead-drawer" onClick={(e) => e.stopPropagation()}>
         <div style={styles.drawerHead}>
           <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>ליד חדש</h3>
@@ -1062,7 +1102,7 @@ function DateField({ label, value, onChange }) {
 // ============ CSS ============
 const css = `
   * { box-sizing: border-box; }
-  body { margin:0; }
+  html, body { margin:0; overflow-x: hidden; max-width: 100%; }
   .nav-item:hover { background: rgba(255,255,255,0.06) !important; }
   .lead-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); transform: translateY(-1px); }
   .row-btn:hover { background: #F8FAFC; }
@@ -1073,11 +1113,25 @@ const css = `
   .spin { animation: spin 1s linear infinite; }
   @keyframes slideIn { from { transform: translateX(-30px); opacity:0 } to { transform:translateX(0); opacity:1 } }
   @keyframes toastIn { from { transform: translateY(20px); opacity:0 } to { transform:translateY(0); opacity:1 } }
+  @media (max-width: 768px) {
+    .kpi-row { grid-template-columns: repeat(2, 1fr) !important; gap: 12px !important; }
+    .dash-grid { grid-template-columns: 1fr !important; }
+    input, select, textarea, button { font-size: 16px; }
+    .lead-drawer { width: 100vw !important; max-width: 100vw !important; }
+  }
 `;
 
 const FONT = `"Heebo", "Assistant", -apple-system, "Segoe UI", sans-serif`;
 const styles = {
   app: { display: "flex", height: "100vh", fontFamily: FONT, background: "#F4F6F9", color: KAPPA.ink, direction: "rtl" },
+  appMobile: { flexDirection: "column", height: "100dvh" },
+  mainMobile: { paddingBottom: 68 },
+  topbarMobile: { height: 58, padding: "0 14px", gap: 8 },
+  contentMobile: { padding: "16px 14px" },
+  dueBadgeMobile: { padding: "8px 11px", minWidth: 0 },
+  bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, height: 64, background: "#fff", borderTop: "1px solid #EAEEF3", display: "flex", alignItems: "stretch", justifyContent: "space-around", zIndex: 90, paddingBottom: "env(safe-area-inset-bottom)", boxShadow: "0 -2px 12px rgba(0,0,0,0.06)" },
+  bottomNavItem: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none", cursor: "pointer", fontFamily: FONT, padding: "8px 0" },
+  fab: { position: "fixed", bottom: 80, left: 18, width: 56, height: 56, borderRadius: 28, background: KAPPA.teal, color: "#fff", border: "none", display: "grid", placeItems: "center", cursor: "pointer", zIndex: 91, boxShadow: "0 6px 20px rgba(31,169,184,0.45)" },
   sidebar: { width: 240, background: "#1E2329", display: "flex", flexDirection: "column", padding: "22px 16px", flexShrink: 0 },
   brand: { display: "flex", alignItems: "center", gap: 12, marginBottom: 32, padding: "0 6px" },
   brandLogoWrap: { width: "100%", background: "#fff", borderRadius: 12, padding: "12px 14px", boxSizing: "border-box", display: "grid", placeItems: "center" },
@@ -1136,7 +1190,7 @@ const styles = {
   invHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   invTotal: { fontSize: 13, fontWeight: 700, color: KAPPA.teal },
   invRow: { background: "#fff", border: "1px solid #EEF2F4", borderRadius: 10, padding: 10, marginBottom: 8 },
-  invRowTop: { display: "flex", gap: 8, alignItems: "center" },
+  invRowTop: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   invRemove: { width: 30, height: 30, borderRadius: 8, border: "1px solid #F0D5D5", background: "#FEF6F6", color: "#D9756B", fontSize: 18, lineHeight: 1, cursor: "pointer", flexShrink: 0 },
   invCompound: { display: "flex", alignItems: "center", gap: 7, marginTop: 9, fontSize: 13, color: KAPPA.ink, cursor: "pointer" },
   invAdd: { width: "100%", padding: "9px", borderRadius: 9, border: `1.5px dashed ${KAPPA.teal}`, background: "#fff", color: KAPPA.teal, fontWeight: 700, fontSize: 13, fontFamily: FONT, cursor: "pointer", marginTop: 2 },
@@ -1184,7 +1238,7 @@ const styles = {
   drawer: { width: 460, maxWidth: "92vw", height: "100%", background: "#fff", display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(0,0,0,0.15)", animation: "slideIn .22s ease" },
   drawerHead: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid #F1F5F9", flexShrink: 0 },
   iconBtn: { width: 36, height: 36, borderRadius: 9, border: "none", background: "#F4F6F9", display: "grid", placeItems: "center", cursor: "pointer", color: KAPPA.graphite },
-  drawerBody: { flex: 1, overflowY: "auto", padding: "22px" },
+  drawerBody: { flex: 1, overflowY: "auto", overflowX: "hidden", padding: "22px", minWidth: 0 },
   drawerTop: { textAlign: "center", marginBottom: 20 },
   avatarLg: { width: 64, height: 64, borderRadius: 16, display: "grid", placeItems: "center", fontWeight: 800, fontSize: 22, margin: "0 auto 12px" },
   drawerName: { fontSize: 20, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
@@ -1207,8 +1261,8 @@ const styles = {
   centerState: { display: "flex", flexDirection: "column", alignItems: "center", gap: 14, padding: "70px 20px", textAlign: "center" },
   stateText: { fontSize: 14.5, color: "#94A3B8", maxWidth: 340, lineHeight: 1.6 },
   retryBtn: { border: "none", borderRadius: 9, padding: "10px 20px", background: KAPPA.teal, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
-  field: { marginBottom: 14, flex: 1 },
-  fieldRow: { display: "flex", gap: 12 },
+  field: { marginBottom: 14, flex: "1 1 160px", minWidth: 0 },
+  fieldRow: { display: "flex", gap: 12, flexWrap: "wrap" },
   fieldLabel: { display: "block", fontSize: 13, fontWeight: 600, color: KAPPA.graphite, marginBottom: 6 },
   input: { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 14, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
   saveBtn: { width: "100%", padding: "13px", borderRadius: 11, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 6 },
