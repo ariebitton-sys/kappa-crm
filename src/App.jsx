@@ -40,6 +40,35 @@ const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "
 
 const CAMPAIGNS = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "זוביזר", "אתר"];
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
+// Tracks that support compound interest (ריבית דריבית). Only these show the toggle.
+const COMPOUND_TRACKS = ["Multi Single", "Brick Capital"];
+function isCompoundEligible(track) { return COMPOUND_TRACKS.indexOf(track) !== -1; }
+// Normalize a lead's investments into an array of {track, amount, compound}.
+// Falls back to the legacy single track+amount fields for older leads.
+function parseInvestments(lead) {
+  let raw = lead && lead.investments;
+  if (typeof raw === "string" && raw.trim()) {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
+  if (Array.isArray(raw) && raw.length) {
+    return raw.map((r) => ({
+      track: r.track || "",
+      amount: r.amount === "" || r.amount == null ? "" : Number(r.amount),
+      compound: isCompoundEligible(r.track) ? !!r.compound : false,
+    }));
+  }
+  // Legacy fallback: build a single row from track + amount
+  if (lead && (lead.track || lead.amount)) {
+    return [{ track: lead.track || "", amount: lead.amount === "" || lead.amount == null ? "" : Number(lead.amount), compound: false }];
+  }
+  return [];
+}
+function investmentsTotal(rows) {
+  return rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+}
+function investmentsTracksLabel(rows) {
+  return rows.map((r) => r.track).filter(Boolean).join(", ");
+}
 
 const fmtMoney = (n) => {
   const num = Number(n);
@@ -47,6 +76,15 @@ const fmtMoney = (n) => {
 };
 const initials = (name) => (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
 const todayStr = () => new Date().toLocaleDateString("en-GB");
+// Parse a dd/mm/yyyy string into a Date (or null if invalid/empty).
+const parseDMY = (s) => {
+  if (!s) return null;
+  const m = String(s).match(/(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/);
+  if (!m) return null;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  return isNaN(d.getTime()) ? null : d;
+};
+const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 // dd/mm/yyyy comparison
 const isDue = (d) => {
   if (!d) return false;
@@ -253,6 +291,17 @@ function Dashboard({ stats, leads, onOpen }) {
   const recent = leads.slice(0, 6);
   const byStage = STAGES.map((s) => ({ ...s, count: leads.filter((l) => l.stage === s.id).length }));
   const maxCount = Math.max(1, ...byStage.map((s) => s.count));
+
+  // Follow-up calls, split by timing. Active leads only (skip lost).
+  const today = startOfToday();
+  const withCall = leads
+    .filter((l) => l.stage !== "lost" && parseDMY(l.next_call))
+    .map((l) => ({ lead: l, date: parseDMY(l.next_call) }));
+  // Overdue: call date is before today. Oldest (most overdue) first.
+  const overdue = withCall.filter((x) => x.date < today).sort((a, b) => a.date - b.date);
+  // Upcoming: call date is today or later. Soonest (closest to today) first.
+  const upcoming = withCall.filter((x) => x.date >= today).sort((a, b) => a.date - b.date);
+
   return (
     <div>
       <h1 style={styles.pageTitle}>סקירה כללית</h1>
@@ -296,6 +345,41 @@ function Dashboard({ stats, leads, onOpen }) {
           </div>
         </div>
       </div>
+      <div style={styles.dashGrid}>
+        <CallList title="שיחות שעבר זמנן" tint="#EF4444" items={overdue} emptyText="אין שיחות באיחור 🎉" onOpen={onOpen} />
+        <CallList title="שיחות קרובות" tint={KAPPA.teal} items={upcoming} emptyText="אין שיחות מתוזמנות" onOpen={onOpen} />
+      </div>
+    </div>
+  );
+}
+
+// A dashboard block listing leads by their next_call date.
+function CallList({ title, tint, items, emptyText, onOpen }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardHead}>
+        <h3 style={styles.cardTitle}><span style={{ ...styles.callDotBig, background: tint }} /> {title}</h3>
+        <span style={styles.callCount}>{items.length}</span>
+      </div>
+      <div>
+        {items.length === 0 && <div style={styles.callEmpty}>{emptyText}</div>}
+        {items.map(({ lead, date }) => {
+          const st = stageOf(lead.stage);
+          const days = Math.round((date - startOfToday()) / 86400000);
+          const when = days === 0 ? "היום" : days < 0 ? `לפני ${Math.abs(days)} ימים` : `בעוד ${days} ימים`;
+          return (
+            <button key={lead.id} className="row-btn" style={styles.recentRow} onClick={() => onOpen(lead)}>
+              <div style={{ ...styles.avatar, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
+              <div style={{ flex: 1, textAlign: "right" }}>
+                <div style={styles.recentName}>{lead.name}</div>
+                <div style={styles.recentMeta}>{lead.next_call} · {st.label}</div>
+              </div>
+              <span style={{ ...styles.chip, background: tint === "#EF4444" ? "#FEF2F2" : KAPPA.tealSoft, color: tint }}>{when}</span>
+              <ChevronLeft size={16} color="#CBD5E1" />
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -314,6 +398,14 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
   const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
+  const [expanded, setExpanded] = useState({}); // { [stageId]: true } → show all cards
+  const COLLAPSED_LIMIT = 5;
+  // Newest lead first (LIFO) by created_at; falls back to id order.
+  const sortLifo = (arr) => [...arr].sort((a, b) => {
+    const da = parseDMY(a.created_at), db = parseDMY(b.created_at);
+    if (da && db && da - db !== 0) return db - da;
+    return String(b.id).localeCompare(String(a.id), undefined, { numeric: true });
+  });
 
   // pointer-based drag (RTL-safe, works everywhere)
   useEffect(() => {
@@ -382,8 +474,11 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
       {mode === "kanban" ? (
         <div style={styles.board}>
           {STAGES.map((stage) => {
-            const items = leads.filter((l) => l.stage === stage.id);
-            const sum = items.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+            const all = sortLifo(leads.filter((l) => l.stage === stage.id));
+            const sum = all.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+            const isOpen = !!expanded[stage.id];
+            const items = isOpen ? all : all.slice(0, COLLAPSED_LIMIT);
+            const hidden = all.length - items.length;
             const isOver = overStage === stage.id && drag;
             return (
               <div key={stage.id} className="col" data-stage={stage.id}
@@ -391,7 +486,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
                 <div style={styles.colHead}>
                   <span style={{ ...styles.colDot, background: stage.color }} />
                   <span style={styles.colTitle}>{stage.label}</span>
-                  <span style={styles.colCount}>{items.length}</span>
+                  <span style={styles.colCount}>{all.length}</span>
                 </div>
                 {sum > 0 && <div style={styles.colSum}>{fmtMoney(sum)}</div>}
                 <div style={styles.colBody}>
@@ -401,7 +496,12 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
                       onPointerDown={(e) => startDrag(e, l)}
                       dragging={drag && drag.id === l.id} />
                   ))}
-                  {items.length === 0 && <div style={styles.emptyCol}>גרור לכאן</div>}
+                  {all.length === 0 && <div style={styles.emptyCol}>גרור לכאן</div>}
+                  {(hidden > 0 || isOpen) && all.length > COLLAPSED_LIMIT && (
+                    <button style={styles.expandBtn} onClick={() => setExpanded((p) => ({ ...p, [stage.id]: !isOpen }))}>
+                      {isOpen ? "הצג פחות ▲" : `הצג עוד ${hidden} ▼`}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -602,33 +702,111 @@ function JourneyBoard({ leads, onOpen }) {
               </div>
               <button style={styles.linkBtn} onClick={() => onOpen(l)}>פרטים <ArrowLeft size={14} /></button>
             </div>
-            <JourneyBar current={Number(l.journey_stage) || 0} />
+            <JourneyBar current={Number(l.journey_stage) || 0} done={Number(l.journey_done) || 0} />
           </div>
         ))}
       </div>
     </div>
   );
 }
-function JourneyBar({ current }) {
+function JourneyBar({ current, done }) {
+  // current = the active stage (1-6), shown with a ring around the number.
+  // done = highest completed stage (0-6), shown filled with a check.
+  const activeIdx = (Number(current) || 0) - 1; // 0-based index of the active step
+  const doneCount = Number(done) || 0;           // how many steps are fully complete
   return (
     <div style={styles.journeyBar}>
       {JOURNEY.map((label, i) => {
-        const done = i < current, active = i === current;
+        const isDone = i < doneCount;              // fully completed → filled
+        const isActive = i === activeIdx && !isDone; // reached but not yet completed → ring
         return (
           <React.Fragment key={i}>
             <div style={styles.jStep}>
               <div style={{
                 ...styles.jDot,
-                background: done ? KAPPA.teal : active ? "#fff" : "#F1F5F9",
-                borderColor: done || active ? KAPPA.teal : "#E2E8F0",
-                color: done ? "#fff" : active ? KAPPA.teal : "#CBD5E1",
-              }}>{done ? <CheckCircle2 size={15} /> : i + 1}</div>
-              <span style={{ ...styles.jLabel, color: done || active ? KAPPA.ink : "#94A3B8", fontWeight: active ? 700 : 500 }}>{label}</span>
+                background: isDone ? KAPPA.teal : "#fff",
+                borderColor: (isDone || isActive) ? KAPPA.teal : "#E2E8F0",
+                borderWidth: isActive ? 3 : 2,
+                color: isDone ? "#fff" : isActive ? KAPPA.teal : "#CBD5E1",
+                boxShadow: isActive ? `0 0 0 4px ${KAPPA.teal}22` : "none",
+              }}>{isDone ? <CheckCircle2 size={15} /> : i + 1}</div>
+              <span style={{ ...styles.jLabel, color: (isDone || isActive) ? KAPPA.ink : "#94A3B8", fontWeight: isActive ? 700 : 500 }}>{label}</span>
             </div>
-            {i < JOURNEY.length - 1 && <div style={{ ...styles.jLine, background: done ? KAPPA.teal : "#E2E8F0" }} />}
+            {i < JOURNEY.length - 1 && <div style={{ ...styles.jLine, background: i < doneCount ? KAPPA.teal : "#E2E8F0" }} />}
           </React.Fragment>
         );
       })}
+    </div>
+  );
+}
+
+// ============ Investments Editor ============
+// Lets an investor split their investment across multiple tracks, each with its
+// own amount and (for eligible tracks) a compound-interest toggle.
+function InvestmentsEditor({ rows, onChange }) {
+  const update = (i, patch) => {
+    const next = rows.map((r, idx) => {
+      if (idx !== i) return r;
+      const merged = { ...r, ...patch };
+      // Clear compound if the new track isn't eligible
+      if (!isCompoundEligible(merged.track)) merged.compound = false;
+      return merged;
+    });
+    onChange(next);
+  };
+  const addRow = () => onChange([...rows, { track: "", amount: "", compound: false }]);
+  const removeRow = (i) => onChange(rows.filter((_, idx) => idx !== i));
+  const total = investmentsTotal(rows);
+  return (
+    <div style={styles.invWrap}>
+      <div style={styles.invHead}>
+        <span style={styles.fieldLabel}>מסלולי השקעה</span>
+        <span style={styles.invTotal}>סה״כ: {fmtMoney(total)}</span>
+      </div>
+      {rows.map((r, i) => {
+        const eligible = isCompoundEligible(r.track);
+        return (
+          <div key={i} style={styles.invRow}>
+            <div style={styles.invRowTop}>
+              <select style={{ ...styles.input, flex: 1 }} value={r.track} onChange={(e) => update(i, { track: e.target.value })}>
+                <option value="">בחר מסלול…</option>
+                {TRACKS.map((t) => <option key={t}>{t}</option>)}
+              </select>
+              <input style={{ ...styles.input, width: 110 }} type="number" placeholder="סכום $" value={r.amount} onChange={(e) => update(i, { amount: e.target.value })} dir="ltr" />
+              <button style={styles.invRemove} onClick={() => removeRow(i)} title="הסר מסלול" aria-label="הסר">×</button>
+            </div>
+            {eligible && (
+              <label style={styles.invCompound}>
+                <input type="checkbox" checked={!!r.compound} onChange={(e) => update(i, { compound: e.target.checked })} />
+                <span>מעוניין בריבית דריבית</span>
+              </label>
+            )}
+          </div>
+        );
+      })}
+      <button style={styles.invAdd} onClick={addRow}>+ הוסף מסלול</button>
+    </div>
+  );
+}
+
+// Read-only display of a lead's investment tracks, amounts, and payout mode.
+function InvestmentsView({ lead }) {
+  const rows = parseInvestments(lead);
+  if (!rows.length) return null;
+  return (
+    <div style={styles.invViewWrap}>
+      <div style={styles.fieldLabel}>מסלולי השקעה</div>
+      {rows.map((r, i) => (
+        <div key={i} style={styles.invViewRow}>
+          <span style={styles.invViewTrack}>{r.track}</span>
+          <span style={styles.invViewAmount}>{fmtMoney(r.amount)}</span>
+          {isCompoundEligible(r.track) && (
+            <span style={{ ...styles.invViewMode, color: r.compound ? KAPPA.teal : "#94A3B8" }}>
+              {r.compound ? "ריבית דריבית" : "משיכה"}
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -637,17 +815,30 @@ function JourneyBar({ current }) {
 function LeadDrawer({ lead, onClose, onMove, onSave }) {
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState(lead);
+  const [invRows, setInvRows] = useState(() => parseInvestments(lead));
   const [saving, setSaving] = useState(false);
   const st = stageOf(lead.stage);
   const isInterested = lead.stage === "interested";
   const isLost = lead.stage === "lost";
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
 
-  const startEdit = () => { setF(lead); setEditing(true); };
-  const cancel = () => { setEditing(false); setF(lead); };
+  const startEdit = () => { setF(lead); setInvRows(parseInvestments(lead)); setEditing(true); };
+  const cancel = () => { setEditing(false); setF(lead); setInvRows(parseInvestments(lead)); };
   const save = async () => {
     setSaving(true);
-    await onSave({ ...f, amount: f.amount === "" || f.amount == null ? "" : Number(f.amount) });
+    // Clean the investment rows (drop empty ones) and derive the aggregate fields
+    const clean = invRows.filter((r) => r.track && (Number(r.amount) || 0) > 0).map((r) => {
+      const o = { track: r.track, amount: Number(r.amount) || 0 };
+      if (isCompoundEligible(r.track)) o.compound = !!r.compound;
+      return o;
+    });
+    const payload = {
+      ...f,
+      investments: JSON.stringify(clean),
+      amount: investmentsTotal(clean),      // aggregate total keeps KPIs/Kanban working
+      track: investmentsTracksLabel(clean), // comma-joined tracks for legacy display
+    };
+    await onSave(payload);
     setSaving(false);
     setEditing(false);
   };
@@ -676,14 +867,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
               </Field>
               <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
             </div>
-            <div style={styles.fieldRow}>
-              <Field label="סכום השקעה ($)"><input style={styles.input} type="number" value={f.amount ?? ""} onChange={(e) => set("amount", e.target.value)} dir="ltr" /></Field>
-              <Field label="אפיק השקעה">
-                <select style={styles.input} value={f.track || ""} onChange={(e) => set("track", e.target.value)}>
-                  <option value="">—</option>{TRACKS.map((t) => <option key={t}>{t}</option>)}
-                </select>
-              </Field>
-            </div>
+            <InvestmentsEditor rows={invRows} onChange={setInvRows} />
             <div style={styles.fieldRow}>
               <Field label="מועד פגישה"><input style={styles.input} value={f.meeting_date || ""} onChange={(e) => set("meeting_date", e.target.value)} placeholder="dd/mm/yyyy" dir="ltr" /></Field>
               <Field label="קשר אחרון"><input style={styles.input} value={f.last_contact || ""} onChange={(e) => set("last_contact", e.target.value)} placeholder="dd/mm/yyyy" dir="ltr" /></Field>
@@ -723,12 +907,12 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
           </div>
           <div style={styles.detailGrid}>
             <Detail label="קמפיין" value={lead.campaign || "—"} />
-            <Detail label="אפיק השקעה" value={lead.track || "—"} />
-            <Detail label="סכום" value={fmtMoney(lead.amount)} />
+            <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
             <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
             <Detail label="קשר אחרון" value={lead.last_contact || "—"} />
             <Detail label="שיחה הבאה" value={lead.next_call || "—"} highlight={isDue(lead.next_call)} />
           </div>
+          <InvestmentsView lead={lead} />
           {isLost && (
             <div style={styles.reasonBox}>
               <div style={styles.summaryLabel}>סיבה</div>
@@ -752,7 +936,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
           {isInterested && (
             <div style={styles.journeyPromo}>
               <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
-              <JourneyBar current={Number(lead.journey_stage) || 0} />
+              <JourneyBar current={Number(lead.journey_stage) || 0} done={Number(lead.journey_done) || 0} />
             </div>
           )}
           <div style={styles.stageSwitch}>
@@ -920,6 +1104,23 @@ const styles = {
   listMain: { display: "flex", alignItems: "center", gap: 11, border: "none", background: "transparent", cursor: "pointer", fontFamily: FONT, padding: 0, flex: "0 0 auto" },
   listMeta: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1 },
   stageSelect: { border: "1.5px solid #E2E8F0", borderRadius: 8, padding: "7px 10px", fontSize: 13, fontWeight: 600, fontFamily: FONT, color: KAPPA.ink, background: "#fff", cursor: "pointer", flexShrink: 0 },
+  invWrap: { border: "1px solid #E8EEF0", borderRadius: 12, padding: 14, background: "#FAFCFD", marginBottom: 4 },
+  invHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  invTotal: { fontSize: 13, fontWeight: 700, color: KAPPA.teal },
+  invRow: { background: "#fff", border: "1px solid #EEF2F4", borderRadius: 10, padding: 10, marginBottom: 8 },
+  invRowTop: { display: "flex", gap: 8, alignItems: "center" },
+  invRemove: { width: 30, height: 30, borderRadius: 8, border: "1px solid #F0D5D5", background: "#FEF6F6", color: "#D9756B", fontSize: 18, lineHeight: 1, cursor: "pointer", flexShrink: 0 },
+  invCompound: { display: "flex", alignItems: "center", gap: 7, marginTop: 9, fontSize: 13, color: KAPPA.ink, cursor: "pointer" },
+  invAdd: { width: "100%", padding: "9px", borderRadius: 9, border: `1.5px dashed ${KAPPA.teal}`, background: "#fff", color: KAPPA.teal, fontWeight: 700, fontSize: 13, fontFamily: FONT, cursor: "pointer", marginTop: 2 },
+  invViewWrap: { marginTop: 16, background: "#F8FBFC", border: "1px solid #E8EEF0", borderRadius: 12, padding: 14 },
+  invViewRow: { display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #EEF3F5" },
+  invViewTrack: { flex: 1, fontSize: 14, fontWeight: 600, color: KAPPA.ink },
+  invViewAmount: { fontSize: 14, fontWeight: 700, color: KAPPA.ink, direction: "ltr" },
+  invViewMode: { fontSize: 12, fontWeight: 600, minWidth: 78, textAlign: "left" },
+  expandBtn: { width: "100%", padding: "8px", marginTop: 4, borderRadius: 8, border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.teal, fontWeight: 700, fontSize: 12.5, fontFamily: FONT, cursor: "pointer" },
+  callDotBig: { display: "inline-block", width: 9, height: 9, borderRadius: "50%", marginLeft: 7, verticalAlign: "middle" },
+  callCount: { fontSize: 13, fontWeight: 700, color: "#94A3B8", background: "#F1F5F9", borderRadius: 20, padding: "2px 10px" },
+  callEmpty: { padding: "22px", textAlign: "center", color: "#B6C2CE", fontSize: 13.5, fontWeight: 600 },
   listDragHandle: { display: "grid", placeItems: "center", border: "none", background: "transparent", cursor: "grab", padding: 4, flexShrink: 0, touchAction: "none" },
   listEmpty: { padding: "14px 18px", fontSize: 13, color: "#B6C2CE", textAlign: "center", fontWeight: 600 },
   col: { width: 264, flexShrink: 0, background: "#EFF2F6", borderRadius: 14, padding: 10, maxHeight: "calc(100vh - 210px)", display: "flex", flexDirection: "column" },
