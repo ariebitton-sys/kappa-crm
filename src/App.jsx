@@ -768,14 +768,14 @@ function JourneyBar({ current, done }) {
   const activeIdx = (Number(current) || 0) - 1; // 0-based index of the active step
   const doneCount = Number(done) || 0;           // how many steps are fully complete
   return (
-    <div style={styles.journeyBar}>
+    <div style={styles.journeyBar} className="journey-bar">
       {JOURNEY.map((label, i) => {
         const isDone = i < doneCount;              // fully completed → filled
         const isActive = i === activeIdx && !isDone; // reached but not yet completed → ring
         return (
           <React.Fragment key={i}>
-            <div style={styles.jStep}>
-              <div style={{
+            <div style={styles.jStep} className="journey-step">
+              <div className="journey-dot" style={{
                 ...styles.jDot,
                 background: isDone ? KAPPA.teal : "#fff",
                 borderColor: (isDone || isActive) ? KAPPA.teal : "#E2E8F0",
@@ -783,9 +783,9 @@ function JourneyBar({ current, done }) {
                 color: isDone ? "#fff" : isActive ? KAPPA.teal : "#CBD5E1",
                 boxShadow: isActive ? `0 0 0 4px ${KAPPA.teal}22` : "none",
               }}>{isDone ? <CheckCircle2 size={15} /> : i + 1}</div>
-              <span style={{ ...styles.jLabel, color: (isDone || isActive) ? KAPPA.ink : "#94A3B8", fontWeight: isActive ? 700 : 500 }}>{label}</span>
+              <span className="journey-label" style={{ ...styles.jLabel, color: (isDone || isActive) ? KAPPA.ink : "#94A3B8", fontWeight: isActive ? 700 : 500 }}>{label}</span>
             </div>
-            {i < JOURNEY.length - 1 && <div style={{ ...styles.jLine, background: i < doneCount ? KAPPA.teal : "#E2E8F0" }} />}
+            {i < JOURNEY.length - 1 && <div className="journey-line" style={{ ...styles.jLine, background: i < doneCount ? KAPPA.teal : "#E2E8F0" }} />}
           </React.Fragment>
         );
       })}
@@ -906,7 +906,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
             <button style={styles.iconBtn} onClick={cancel}><X size={20} /></button>
             <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>עריכת ליד</h3>
           </div>
-          <div style={styles.drawerBody}>
+          <div style={styles.drawerBody} className="drawer-body">
             <Field label="שם מלא"><input style={styles.input} value={f.name || ""} onChange={(e) => set("name", e.target.value)} /></Field>
             <div style={styles.fieldRow}>
               <Field label="טלפון"><input style={styles.input} value={f.phone || ""} onChange={(e) => set("phone", e.target.value)} dir="ltr" /></Field>
@@ -948,7 +948,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
             <div style={{ ...styles.chip, background: st.soft, color: st.color }}>{st.label}</div>
           </div>
         </div>
-        <div style={styles.drawerBody}>
+        <div style={styles.drawerBody} className="drawer-body">
           <div style={styles.drawerTop}>
             <div style={{ ...styles.avatarLg, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
             <h2 style={styles.drawerName}>{lead.name}</h2>
@@ -987,7 +987,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
             </div>
           )}
           {isInterested && (
-            <div style={styles.journeyPromo}>
+            <div style={styles.journeyPromo} className="journey-promo">
               <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
               <JourneyBar current={Number(lead.journey_stage) || 0} done={Number(lead.journey_done) || 0} />
             </div>
@@ -1040,7 +1040,7 @@ function AddLead({ onClose, onSave }) {
           <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>ליד חדש</h3>
         </div>
-        <div style={styles.drawerBody}>
+        <div style={styles.drawerBody} className="drawer-body">
           <Field label="שם מלא *"><input style={styles.input} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="שם המתעניין" /></Field>
           <div style={styles.fieldRow}>
             <Field label="טלפון"><input style={styles.input} value={f.phone} onChange={(e) => set("phone", e.target.value)} dir="ltr" /></Field>
@@ -1118,6 +1118,13 @@ const css = `
     .dash-grid { grid-template-columns: 1fr !important; }
     input, select, textarea, button { font-size: 16px; }
     .lead-drawer { width: 100vw !important; max-width: 100vw !important; }
+    .journey-bar { gap: 0 !important; overflow-x: auto; padding-bottom: 4px; }
+    .journey-step { width: 46px !important; gap: 5px !important; }
+    .journey-dot { width: 30px !important; height: 30px !important; font-size: 12px !important; }
+    .journey-label { font-size: 9.5px !important; line-height: 1.25 !important; }
+    .journey-line { min-width: 4px !important; margin-top: 14px !important; }
+    .journey-promo { padding: 14px 10px !important; }
+    .drawer-body { padding: 16px 14px !important; }
   }
 `;
 
