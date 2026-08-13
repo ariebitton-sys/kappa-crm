@@ -176,8 +176,15 @@ export default function App() {
     // Re-entering "interested" with an existing journey in progress →
     // ask whether to resume from the last stage or restart from scratch.
     const priorStage = Number(lead.journey_stage) || 0;
-    if (stage === "interested" && priorStage > 0 && !lead.journey_done) {
-      setJourneyPrompt({ id, resumeStage: priorStage });
+    const doneStage = Number(lead.journey_done) || 0;
+    // journey_done holds the last stage the investor approved (not a boolean).
+    // Offer resume whenever a journey has started and hasn't fully completed
+    // (a completed journey has reached the final stage on both fields).
+    const journeyComplete = priorStage >= 6 && doneStage >= 5;
+    if (stage === "interested" && (priorStage > 0 || doneStage > 0) && !journeyComplete) {
+      // Resume from the furthest point reached so we never send an earlier email.
+      const resumeAt = Math.max(priorStage, doneStage) || 1;
+      setJourneyPrompt({ id, resumeStage: resumeAt });
       return;
     }
     // Fresh entry (never started a journey) → start at 0.
