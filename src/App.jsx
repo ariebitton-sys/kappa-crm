@@ -181,24 +181,33 @@ export default function App() {
       return;
     }
     // Fresh entry (never started a journey) → start at 0.
-    const journeyOverride = (stage === "interested" && (lead.journey_stage === "" || lead.journey_stage == null)) ? 0 : undefined;
-    commitMove(id, stage, journeyOverride);
+    const isFresh = stage === "interested" && (lead.journey_stage === "" || lead.journey_stage == null);
+    commitMove(id, stage, isFresh ? { journeyStage: 0 } : {});
   };
 
-  // Performs the actual stage change (+ optional journey_stage reset) and syncs to CRM.
-  const commitMove = async (id, stage, journeyStageOverride) => {
+  // Performs the actual stage change and syncs to CRM.
+  // opts: { journeyStage } = explicit journey_stage to write (0 = restart);
+  //       { resumeStage }  = resume an existing journey → n8n resends the
+  //                          current-stage reminder to investor + admin.
+  const commitMove = async (id, stage, opts = {}) => {
     const prev = leads;
     const patch = { stage };
-    if (journeyStageOverride != null) patch.journey_stage = journeyStageOverride;
+    if (opts.journeyStage != null) patch.journey_stage = opts.journeyStage;
+    if (opts.resumeStage != null) patch.journey_stage = opts.resumeStage;
     setLeads((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
     if (selected && selected.id === id) setSelected((s) => ({ ...s, ...patch }));
     try {
+      // Only send journey_stage / resume_stage when explicitly set. Moving a
+      // lead OUT of "interested" sends neither, so the sheet keeps its value.
+      const body = { id, stage };
+      if (opts.journeyStage != null) body.journey_stage = opts.journeyStage;
+      if (opts.resumeStage != null) body.resume_stage = opts.resumeStage;
       const res = await fetch(API.stage, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, stage, journey_stage: patch.journey_stage }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error();
-      flash("הסטטוס עודכן");
+      flash(opts.resumeStage != null ? "ממשיך מהשלב האחרון — נשלחה תזכורת" : "הסטטוס עודכן");
     } catch {
       setLeads(prev); flash("העדכון נכשל — הסטטוס שוחזר", "err");
     }
@@ -314,12 +323,12 @@ export default function App() {
             <div style={styles.confirmBtns}>
               <button
                 style={styles.confirmPrimary}
-                onClick={() => { commitMove(journeyPrompt.id, "interested", undefined); setJourneyPrompt(null); }}>
+                onClick={() => { commitMove(journeyPrompt.id, "interested", { resumeStage: journeyPrompt.resumeStage }); setJourneyPrompt(null); }}>
                 המשך משלב {journeyPrompt.resumeStage}
               </button>
               <button
                 style={styles.confirmSecondary}
-                onClick={() => { commitMove(journeyPrompt.id, "interested", 0); setJourneyPrompt(null); }}>
+                onClick={() => { commitMove(journeyPrompt.id, "interested", { journeyStage: 0 }); setJourneyPrompt(null); }}>
                 התחל מחדש
               </button>
             </div>
