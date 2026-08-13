@@ -164,7 +164,7 @@ export default function App() {
     const closed = leads.filter((l) => l.stage === "closed");
     const pipeline = active.reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const committed = [...interested, ...closed].reduce((s, l) => s + (Number(l.amount) || 0), 0);
-    const dueCalls = leads.filter((l) => isDue(l.next_call)).length;
+    const dueCalls = leads.filter((l) => l.stage !== "closed" && l.stage !== "lost" && isDue(l.next_call)).length;
     return { total: active.length, interested: interested.length, pipeline, committed, dueCalls };
   }, [leads]);
 
@@ -262,7 +262,7 @@ export default function App() {
           {status === "error" && <ErrorState onRetry={loadLeads} />}
           {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} />}
           {status === "ready" && view === "pipeline" && (
-            <Pipeline leads={filtered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} />
+            <Pipeline leads={filtered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} />
           )}
           {status === "ready" && view === "journey" && (
             <JourneyBoard leads={leads.filter((l) => l.stage === "interested")} onOpen={setSelected} />
@@ -348,7 +348,7 @@ function Dashboard({ stats, leads, onOpen }) {
   // Follow-up calls, split by timing. Active leads only (skip lost).
   const today = startOfToday();
   const withCall = leads
-    .filter((l) => l.stage !== "lost" && parseDMY(l.next_call))
+    .filter((l) => l.stage !== "lost" && l.stage !== "closed" && parseDMY(l.next_call))
     .map((l) => ({ lead: l, date: parseDMY(l.next_call) }));
   // Overdue: call date is before today. Oldest (most overdue) first.
   const overdue = withCall.filter((x) => x.date < today).sort((a, b) => a.date - b.date);
@@ -447,7 +447,7 @@ function Kpi({ icon, tint, label, value }) {
 }
 
 // ============ Pipeline ============
-function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
+function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
   const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
@@ -547,7 +547,8 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId }) {
                     <LeadCard key={l.id} lead={l} stage={stage}
                       onClick={() => onOpen(l)}
                       onPointerDown={(e) => startDrag(e, l)}
-                      dragging={drag && drag.id === l.id} />
+                      dragging={drag && drag.id === l.id}
+                      isMobile={isMobile} />
                   ))}
                   {all.length === 0 && <div style={styles.emptyCol}>גרור לכאן</div>}
                   {(hidden > 0 || isOpen) && all.length > COLLAPSED_LIMIT && (
@@ -609,7 +610,7 @@ function ListView({ leads, onOpen, onMove, startDrag, drag, overStage }) {
                 const dragging = drag && drag.id === l.id;
                 return (
                   <ListRow key={l.id} lead={l} stage={stage} due={due} dragging={dragging}
-                    onOpen={onOpen} onMove={onMove} startDrag={startDrag} />
+                    onOpen={onOpen} onMove={onMove} startDrag={startDrag} isMobile={isMobile} />
                 );
               })}
               {items.length === 0 && <div style={styles.listEmpty}>גרור לכאן</div>}
@@ -624,7 +625,7 @@ function ListView({ leads, onOpen, onMove, startDrag, drag, overStage }) {
 // A single draggable list row. Uses a small movement threshold so a plain
 // click still opens the drawer and the <select> still works — drag only
 // starts once the pointer actually moves.
-function ListRow({ lead, stage, due, dragging, onOpen, onMove, startDrag }) {
+function ListRow({ lead, stage, due, dragging, onOpen, onMove, startDrag, isMobile }) {
   const startRef = React.useRef(null);
   const movedRef = React.useRef(false);
 
@@ -652,12 +653,14 @@ function ListRow({ lead, stage, due, dragging, onOpen, onMove, startDrag }) {
   };
 
   return (
-    <div className="list-row" style={{ ...styles.listRow, opacity: dragging ? 0.35 : 1, touchAction: "none" }}>
-      <button style={styles.listDragHandle} onPointerDown={handleDown} title="גרור כדי להעביר שלב" aria-label="גרור">
-        <GripVertical size={16} color="#CBD5E1" />
-      </button>
-      <button style={styles.listMain} onPointerDown={handleDown}
-        onClick={() => { if (!movedRef.current) onOpen(lead); }}>
+    <div className="list-row" style={{ ...styles.listRow, opacity: dragging ? 0.35 : 1, touchAction: isMobile ? "auto" : "none" }}>
+      {!isMobile && (
+        <button style={styles.listDragHandle} onPointerDown={handleDown} title="גרור כדי להעביר שלב" aria-label="גרור">
+          <GripVertical size={16} color="#CBD5E1" />
+        </button>
+      )}
+      <button style={styles.listMain} onPointerDown={isMobile ? undefined : handleDown}
+        onClick={() => { if (isMobile || !movedRef.current) onOpen(lead); }}>
         <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
         <div style={{ minWidth: 140, textAlign: "right" }}>
           <div style={styles.leadName}>{lead.name}</div>
@@ -677,7 +680,7 @@ function ListRow({ lead, stage, due, dragging, onOpen, onMove, startDrag }) {
   );
 }
 
-function LeadCard({ lead, stage, onClick, onPointerDown, dragging }) {
+function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile }) {
   const due = isDue(lead.next_call);
   const startRef = React.useRef(null);
   const movedRef = React.useRef(false);
@@ -708,8 +711,8 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging }) {
   const handleClick = () => { if (!movedRef.current) onClick(); };
 
   return (
-    <div className="lead-card" onPointerDown={handleDown} onClick={handleClick}
-      style={{ ...styles.leadCard, opacity: dragging ? 0.35 : 1, borderRightColor: stage.color, touchAction: "none" }}>
+    <div className="lead-card" onPointerDown={isMobile ? undefined : handleDown} onClick={isMobile ? onClick : handleClick}
+      style={{ ...styles.leadCard, opacity: dragging ? 0.35 : 1, borderRightColor: stage.color, touchAction: isMobile ? "auto" : "none" }}>
       <div style={styles.leadCardTop}>
         <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
         <span style={styles.leadName}>{lead.name}</span>
@@ -866,6 +869,7 @@ function InvestmentsView({ lead }) {
 
 // ============ Drawer ============
 function LeadDrawer({ lead, onClose, onMove, onSave }) {
+  const isMobile = useIsMobile();
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState(lead);
   const [invRows, setInvRows] = useState(() => parseInvestments(lead));
@@ -956,7 +960,11 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
           </div>
           <div style={styles.contactRow}>
             {lead.phone && <a href={`tel:${lead.phone}`} style={styles.contactBtn}><Phone size={16} />{lead.phone}</a>}
-            {lead.email && <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>}
+            {lead.email && (
+              isMobile
+                ? <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
+                : <a href={`https://mail.google.com/mail/u/arie@kappainv.com/?view=cm&fs=1&to=${encodeURIComponent(lead.email)}`} target="_blank" rel="noopener noreferrer" style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
+            )}
           </div>
           <div style={styles.detailGrid}>
             <Detail label="קמפיין" value={lead.campaign || "—"} />
