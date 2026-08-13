@@ -130,6 +130,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [dragId, setDragId] = useState(null);
   const [toast, setToast] = useState(null);
+  const [journeyPrompt, setJourneyPrompt] = useState(null); // { id, resumeStage } pending move into "interested"
 
   const flash = (msg, kind = "ok") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 2600); };
 
@@ -170,11 +171,25 @@ export default function App() {
 
   // optimistic stage move → POST /crm/lead/stage
   const moveLead = async (id, stage) => {
-    const prev = leads;
     const lead = leads.find((l) => l.id === id);
     if (!lead || lead.stage === stage) return;
+    // Re-entering "interested" with an existing journey in progress →
+    // ask whether to resume from the last stage or restart from scratch.
+    const priorStage = Number(lead.journey_stage) || 0;
+    if (stage === "interested" && priorStage > 0 && !lead.journey_done) {
+      setJourneyPrompt({ id, resumeStage: priorStage });
+      return;
+    }
+    // Fresh entry (never started a journey) → start at 0.
+    const journeyOverride = (stage === "interested" && (lead.journey_stage === "" || lead.journey_stage == null)) ? 0 : undefined;
+    commitMove(id, stage, journeyOverride);
+  };
+
+  // Performs the actual stage change (+ optional journey_stage reset) and syncs to CRM.
+  const commitMove = async (id, stage, journeyStageOverride) => {
+    const prev = leads;
     const patch = { stage };
-    if (stage === "interested" && (lead.journey_stage === "" || lead.journey_stage == null)) patch.journey_stage = 0;
+    if (journeyStageOverride != null) patch.journey_stage = journeyStageOverride;
     setLeads((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
     if (selected && selected.id === id) setSelected((s) => ({ ...s, ...patch }));
     try {
@@ -286,6 +301,32 @@ export default function App() {
           onMove={(s) => moveLead(selected.id, s)} onSave={updateLead} />
       )}
       {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} />}
+
+      {journeyPrompt && (
+        <div style={styles.confirmOverlay} onClick={() => setJourneyPrompt(null)}>
+          <div style={styles.confirmBox} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.confirmIcon}><Target size={26} color={KAPPA.teal} /></div>
+            <h3 style={styles.confirmTitle}>הליד חוזר למסלול ליווי משקיעים</h3>
+            <p style={styles.confirmText}>
+              הליד כבר התחיל מסע ליווי בעבר (עצר בשלב {journeyPrompt.resumeStage} מתוך {JOURNEY.length}).
+              להמשיך מהנקודה האחרונה, או להתחיל את המסע מחדש?
+            </p>
+            <div style={styles.confirmBtns}>
+              <button
+                style={styles.confirmPrimary}
+                onClick={() => { commitMove(journeyPrompt.id, "interested", undefined); setJourneyPrompt(null); }}>
+                המשך משלב {journeyPrompt.resumeStage}
+              </button>
+              <button
+                style={styles.confirmSecondary}
+                onClick={() => { commitMove(journeyPrompt.id, "interested", 0); setJourneyPrompt(null); }}>
+                התחל מחדש
+              </button>
+            </div>
+            <button style={styles.confirmCancel} onClick={() => setJourneyPrompt(null)}>ביטול</button>
+          </div>
+        </div>
+      )}
       {toast && (
         <div style={{ ...styles.toast, background: toast.kind === "err" ? "#EF4444" : KAPPA.ink }}>
           {toast.kind === "err" ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />} {toast.msg}
@@ -494,6 +535,10 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
   useEffect(() => { overStageRef.current = overStage; }, [overStage]);
 
   const startDrag = (e, lead) => {
+    // Never drag on touch input or narrow screens — moving stages there
+    // is done via the in-lead stage buttons / stage <select>, so an
+    // accidental swipe can't relocate a lead.
+    if (isMobile || (e.pointerType && e.pointerType === "touch")) return;
     if (e.button != null && e.button !== 0) return; // left only
     const target = e.currentTarget || e.target;
     const rect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : { width: 240, left: e.clientX - 120, top: e.clientY - 20 };
@@ -512,7 +557,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
       <div style={styles.pipeHead}>
         <div>
           <h1 style={styles.pageTitle}>לידים</h1>
-          <p style={styles.pageSub}>{mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "רשימת הלידים מקובצת לפי שלב"}</p>
+          <p style={styles.pageSub}>{isMobile ? "הקש על ליד לפתיחה ושינוי שלב" : (mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "רשימת הלידים מקובצת לפי שלב")}</p>
         </div>
         <div style={styles.viewToggle}>
           <button onClick={() => setMode("kanban")} style={{ ...styles.toggleBtn, ...(mode === "kanban" ? styles.toggleActive : {}) }}>
@@ -562,7 +607,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
           })}
         </div>
       ) : (
-        <ListView leads={leads} onOpen={onOpen} onMove={onMove} startDrag={startDrag} drag={drag} overStage={overStage} />
+        <ListView leads={leads} onOpen={onOpen} onMove={onMove} startDrag={startDrag} drag={drag} overStage={overStage} isMobile={isMobile} />
       )}
 
       {drag && (
@@ -583,7 +628,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
   );
 }
 
-function ListView({ leads, onOpen, onMove, startDrag, drag, overStage }) {
+function ListView({ leads, onOpen, onMove, startDrag, drag, overStage, isMobile }) {
   return (
     <div style={styles.listWrap}>
       {STAGES.map((stage) => {
@@ -1250,6 +1295,15 @@ const styles = {
   jLabel: { fontSize: 11.5, textAlign: "center", lineHeight: 1.35 },
   jLine: { flex: 1, height: 2, marginTop: 16, borderRadius: 2, minWidth: 12 },
   overlay: { position: "fixed", inset: 0, background: "rgba(20,25,32,0.5)", display: "flex", justifyContent: "flex-start", zIndex: 100, backdropFilter: "blur(2px)" },
+  confirmOverlay: { position: "fixed", inset: 0, background: "rgba(20,25,32,0.5)", display: "grid", placeItems: "center", zIndex: 120, backdropFilter: "blur(2px)", padding: 20 },
+  confirmBox: { width: "100%", maxWidth: 400, background: "#fff", borderRadius: 18, padding: "26px 24px", textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,0.25)", direction: "rtl" },
+  confirmIcon: { width: 56, height: 56, borderRadius: "50%", background: KAPPA.tealSoft, display: "grid", placeItems: "center", margin: "0 auto 14px" },
+  confirmTitle: { fontSize: 17, fontWeight: 800, color: KAPPA.ink, margin: "0 0 8px" },
+  confirmText: { fontSize: 13.5, lineHeight: 1.6, color: KAPPA.graphite, margin: "0 0 20px" },
+  confirmBtns: { display: "flex", flexDirection: "column", gap: 10 },
+  confirmPrimary: { width: "100%", padding: "13px", borderRadius: 11, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  confirmSecondary: { width: "100%", padding: "13px", borderRadius: 11, background: "#fff", color: KAPPA.tealDark, border: `1.5px solid ${KAPPA.teal}`, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  confirmCancel: { marginTop: 14, background: "none", border: "none", color: "#94A3B8", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: FONT },
   drawer: { width: 520, maxWidth: "92vw", height: "100%", background: "#fff", display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(0,0,0,0.15)", animation: "slideIn .22s ease" },
   drawerHead: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid #F1F5F9", flexShrink: 0 },
   iconBtn: { width: 36, height: 36, borderRadius: 9, border: "none", background: "#F4F6F9", display: "grid", placeItems: "center", cursor: "pointer", color: KAPPA.graphite },
