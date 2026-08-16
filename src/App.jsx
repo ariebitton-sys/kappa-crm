@@ -143,6 +143,15 @@ const STAGES = [
 const ALL_STAGES = STAGES;
 const stageOf = (id) => ALL_STAGES.find((s) => s.id === id) || STAGES[STAGES.length - 1];
 const LOST_REASONS = ["לא מתאים", "לא מעוניין"];
+// Stages that represent open, still-moving potential (excludes closed/lost).
+const FUNNEL_STAGES = ["new", "contact", "meeting", "future", "interested"];
+// Date fields (besides created_at) a lead can be filtered by, for the
+// "other date" filter on the Leads screen.
+const DATE_FILTER_FIELDS = [
+  { id: "meeting_date", label: "מועד פגישה" },
+  { id: "last_contact", label: "קשר אחרון" },
+  { id: "next_call", label: "מועד שיחה הבאה" },
+];
 
 const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "העברה בנקאית", "גישה לאגורה", "פרטי תשלום ראשון"];
 
@@ -301,18 +310,59 @@ export default function App() {
     );
   }, [leads, query]);
 
+  // ---- Leads-screen filters: creation date range, another date field's
+  // range, and stage/group. Independent from the text search above; both
+  // apply together. Only affects the Leads (Pipeline) screen, not the
+  // dashboard's own aggregate numbers. ----
+  const [pf, setPf] = useState({ createdFrom: "", createdTo: "", dateField: "meeting_date", dateFrom: "", dateTo: "", stages: [] });
+  const parseISODateOnly = (s) => {
+    if (!s) return null;
+    const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+  };
+  const pipelineFiltered = useMemo(() => {
+    const hasCreated = pf.createdFrom || pf.createdTo;
+    const hasOther = pf.dateFrom || pf.dateTo;
+    const hasStages = pf.stages.length > 0;
+    if (!hasCreated && !hasOther && !hasStages) return filtered;
+    const cf = parseISODateOnly(pf.createdFrom), ct = parseISODateOnly(pf.createdTo);
+    const df = parseISODateOnly(pf.dateFrom), dt = parseISODateOnly(pf.dateTo);
+    return filtered.filter((l) => {
+      if (hasStages && !pf.stages.includes(l.stage)) return false;
+      if (hasCreated) {
+        const d = parseDMY(l.created_at);
+        if (!d) return false;
+        if (cf && d < cf) return false;
+        if (ct && d > ct) return false;
+      }
+      if (hasOther) {
+        const d = parseDMY(l[pf.dateField]);
+        if (!d) return false;
+        if (df && d < df) return false;
+        if (dt && d > dt) return false;
+      }
+      return true;
+    });
+  }, [filtered, pf]);
+  // Clicking a dashboard KPI jumps to the Leads screen pre-filtered to the
+  // stages that make up that number.
+  const goToFunnelFilter = (stageIds) => {
+    setPf((f) => ({ ...f, stages: stageIds }));
+    setView("pipeline");
+  };
+
   const stats = useMemo(() => {
-    const active = leads.filter((l) => l.stage !== "lost");
     const interested = leads.filter((l) => l.stage === "interested");
     const closed = leads.filter((l) => l.stage === "closed");
-    // "Potential in the funnel" = only leads still actively moving through
-    // the funnel (new → contact → meeting → future → interested) — excludes
-    // closed (already won) and lost, which no longer represent open potential.
-    const FUNNEL_STAGES = ["new", "contact", "meeting", "future", "interested"];
-    const pipeline = leads.filter((l) => FUNNEL_STAGES.includes(l.stage)).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+    // "Active leads" and "potential in the funnel" both count only leads
+    // still actively moving through the funnel (new → contact → meeting →
+    // future → interested) — closed (already won) and lost leads are done,
+    // they no longer represent open activity or potential.
+    const funnelLeads = leads.filter((l) => FUNNEL_STAGES.includes(l.stage));
+    const pipeline = funnelLeads.reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const committed = [...interested, ...closed].reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const dueCalls = leads.filter((l) => l.stage !== "closed" && l.stage !== "lost" && isDue(l.next_call)).length;
-    return { total: active.length, interested: interested.length, pipeline, committed, dueCalls };
+    return { total: funnelLeads.length, interested: interested.length, pipeline, committed, dueCalls };
   }, [leads]);
 
   // optimistic stage move → POST /crm/lead/stage
@@ -450,9 +500,9 @@ export default function App() {
         <div style={{ ...styles.content, ...(isMobile ? styles.contentMobile : {}) }}>
           {status === "loading" && <Loading />}
           {status === "error" && <ErrorState onRetry={loadLeads} />}
-          {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} />}
+          {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} onFilterClick={goToFunnelFilter} />}
           {status === "ready" && view === "pipeline" && (
-            <Pipeline leads={filtered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} />
+            <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} />
           )}
           {status === "ready" && view === "journey" && (
             <JourneyBoard leads={leads.filter((l) => l.stage === "interested")} onOpen={setSelected} />
@@ -556,7 +606,7 @@ function BottomNavItem({ icon, label, active, onClick }) {
 }
 
 // ============ Dashboard ============
-function Dashboard({ stats, leads, onOpen }) {
+function Dashboard({ stats, leads, onOpen, onFilterClick }) {
   const recent = leads.slice(0, 6);
   const byStage = STAGES.map((s) => ({ ...s, count: leads.filter((l) => l.stage === s.id).length }));
   const maxCount = Math.max(1, ...byStage.map((s) => s.count));
@@ -576,10 +626,10 @@ function Dashboard({ stats, leads, onOpen }) {
       <h1 style={styles.pageTitle}>סקירה כללית</h1>
       <p style={styles.pageSub}>תמונת מצב של משפך המשקיעים</p>
       <div style={styles.kpiRow} className="kpi-row">
-        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים פעילים" value={stats.total} />
-        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} />
-        <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="פוטנציאל במשפך לידים" value={fmtMoney(stats.pipeline)} />
-        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="התחייבו / סגרו" value={fmtMoney(stats.committed)} />
+        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים פעילים" value={stats.total} onClick={() => onFilterClick(FUNNEL_STAGES)} />
+        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} onClick={() => onFilterClick(["interested"])} />
+        <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="פוטנציאל במשפך לידים" value={fmtMoney(stats.pipeline)} onClick={() => onFilterClick(FUNNEL_STAGES)} />
+        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="התחייבו / סגרו" value={fmtMoney(stats.committed)} onClick={() => onFilterClick(["interested", "closed"])} />
       </div>
       <div style={styles.dashGrid} className="dash-grid">
         <div style={styles.card}>
@@ -652,9 +702,10 @@ function CallList({ title, tint, items, emptyText, onOpen }) {
     </div>
   );
 }
-function Kpi({ icon, tint, label, value }) {
+function Kpi({ icon, tint, label, value, onClick }) {
   return (
-    <div style={styles.kpi}>
+    <div style={styles.kpi} className={onClick ? "kpi-clickable" : ""} onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}>
       <div style={{ ...styles.kpiIcon, background: tint + "18", color: tint }}>{icon}</div>
       <div style={styles.kpiValue}>{value}</div>
       <div style={styles.kpiLabel}>{label}</div>
@@ -662,8 +713,133 @@ function Kpi({ icon, tint, label, value }) {
   );
 }
 
+// ============ Leads-screen filters ============
+// Compact ISO date input for filter popovers. Uses the same local-state
+// pattern as DateField (see above) so a half-typed year doesn't wipe the
+// day/month already entered — here there's no dd/mm/yyyy conversion since
+// the filter state itself just stores plain ISO strings.
+function FilterDateInput({ value, onChange }) {
+  const [local, setLocal] = useState(value || "");
+  const focusedRef = useRef(false);
+  useEffect(() => { if (!focusedRef.current) setLocal(value || ""); }, [value]);
+  return (
+    <input
+      type="date"
+      value={local}
+      dir="ltr"
+      style={styles.filterDateInput}
+      onFocus={() => { focusedRef.current = true; }}
+      onChange={(e) => {
+        const v = e.target.value;
+        setLocal(v);
+        if (DATE_COMPLETE.test(v)) onChange(v);
+      }}
+      onBlur={() => {
+        focusedRef.current = false;
+        if (!DATE_COMPLETE.test(local) && local !== (value || "")) { setLocal(""); onChange(""); }
+      }}
+    />
+  );
+}
+
+function PipelineFilterBar({ filters, onChange, isMobile }) {
+  const [open, setOpen] = useState(null); // null | 'created' | 'other' | 'stage'
+  const wrapRef = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(null); };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [open]);
+
+  const hasCreated = !!(filters.createdFrom || filters.createdTo);
+  const hasOther = !!(filters.dateFrom || filters.dateTo);
+  const hasStages = filters.stages.length > 0;
+  const anyActive = hasCreated || hasOther || hasStages;
+  const dateFieldLabel = (DATE_FILTER_FIELDS.find((f) => f.id === filters.dateField) || DATE_FILTER_FIELDS[0]).label;
+
+  const toggleStage = (id) => {
+    onChange((f) => ({ ...f, stages: f.stages.includes(id) ? f.stages.filter((s) => s !== id) : [...f.stages, id] }));
+  };
+
+  return (
+    <div style={styles.filterBar} ref={wrapRef}>
+      <div style={styles.filterBtnWrap}>
+        <button style={{ ...styles.filterBtn, ...(hasCreated ? styles.filterBtnActive : {}) }} onClick={() => setOpen(open === "created" ? null : "created")}>
+          <CalendarClock size={14} />{isMobile ? "יצירה" : "תאריך יצירה"}{hasCreated && <span style={styles.filterDot} />}
+        </button>
+        {open === "created" && (
+          <div style={styles.filterPopover}>
+            <div style={styles.filterPopRow}>
+              <div style={styles.filterPopField}>
+                <label style={styles.filterPopLabel}>מתאריך</label>
+                <FilterDateInput value={filters.createdFrom} onChange={(v) => onChange((f) => ({ ...f, createdFrom: v }))} />
+              </div>
+              <div style={styles.filterPopField}>
+                <label style={styles.filterPopLabel}>עד תאריך</label>
+                <FilterDateInput value={filters.createdTo} onChange={(v) => onChange((f) => ({ ...f, createdTo: v }))} />
+              </div>
+            </div>
+            {hasCreated && <button style={styles.filterPopClear} onClick={() => onChange((f) => ({ ...f, createdFrom: "", createdTo: "" }))}>נקה</button>}
+          </div>
+        )}
+      </div>
+
+      <div style={styles.filterBtnWrap}>
+        <button style={{ ...styles.filterBtn, ...(hasOther ? styles.filterBtnActive : {}) }} onClick={() => setOpen(open === "other" ? null : "other")}>
+          <CalendarClock size={14} />{isMobile ? "תאריך" : `תאריך: ${dateFieldLabel}`}{hasOther && <span style={styles.filterDot} />}
+        </button>
+        {open === "other" && (
+          <div style={styles.filterPopover}>
+            <div style={styles.filterPopField}>
+              <label style={styles.filterPopLabel}>לפי שדה</label>
+              <select style={styles.filterPopSelect} value={filters.dateField} onChange={(e) => onChange((f) => ({ ...f, dateField: e.target.value }))}>
+                {DATE_FILTER_FIELDS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+              </select>
+            </div>
+            <div style={styles.filterPopRow}>
+              <div style={styles.filterPopField}>
+                <label style={styles.filterPopLabel}>מתאריך</label>
+                <FilterDateInput value={filters.dateFrom} onChange={(v) => onChange((f) => ({ ...f, dateFrom: v }))} />
+              </div>
+              <div style={styles.filterPopField}>
+                <label style={styles.filterPopLabel}>עד תאריך</label>
+                <FilterDateInput value={filters.dateTo} onChange={(v) => onChange((f) => ({ ...f, dateTo: v }))} />
+              </div>
+            </div>
+            {hasOther && <button style={styles.filterPopClear} onClick={() => onChange((f) => ({ ...f, dateFrom: "", dateTo: "" }))}>נקה</button>}
+          </div>
+        )}
+      </div>
+
+      <div style={styles.filterBtnWrap}>
+        <button style={{ ...styles.filterBtn, ...(hasStages ? styles.filterBtnActive : {}) }} onClick={() => setOpen(open === "stage" ? null : "stage")}>
+          <LayoutGrid size={14} />קבוצה{hasStages ? ` (${filters.stages.length})` : ""}
+        </button>
+        {open === "stage" && (
+          <div style={styles.filterPopover}>
+            {STAGES.map((s) => (
+              <label key={s.id} style={styles.filterCheckRow}>
+                <input type="checkbox" checked={filters.stages.includes(s.id)} onChange={() => toggleStage(s.id)} />
+                <span style={{ ...styles.filterCheckDot, background: s.color }} />{s.label}
+              </label>
+            ))}
+            {hasStages && <button style={styles.filterPopClear} onClick={() => onChange((f) => ({ ...f, stages: [] }))}>נקה בחירה</button>}
+          </div>
+        )}
+      </div>
+
+      {anyActive && (
+        <button style={styles.filterClearAll} onClick={() => onChange((f) => ({ ...f, createdFrom: "", createdTo: "", dateFrom: "", dateTo: "", stages: [] }))}>
+          נקה סינון
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ============ Pipeline ============
-function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
+function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters, onFiltersChange }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
   const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
@@ -730,9 +906,12 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile }) {
   return (
     <div>
       <div style={styles.pipeHead}>
-        <div>
-          <h1 style={styles.pageTitle}>לידים</h1>
-          <p style={styles.pageSub}>{isMobile ? "הקש על ליד לפתיחה ושינוי שלב" : (mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "רשימת הלידים מקובצת לפי שלב")}</p>
+        <div style={styles.pipeHeadMain}>
+          <div>
+            <h1 style={styles.pageTitle}>לידים</h1>
+            <p style={styles.pageSub}>{isMobile ? "הקש על ליד לפתיחה ושינוי שלב" : (mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "רשימת הלידים מקובצת לפי שלב")}</p>
+          </div>
+          <PipelineFilterBar filters={filters} onChange={onFiltersChange} isMobile={isMobile} />
         </div>
         <div style={styles.viewToggle}>
           <button onClick={() => setMode("kanban")} style={{ ...styles.toggleBtn, ...(mode === "kanban" ? styles.toggleActive : {}) }}>
@@ -1379,6 +1558,9 @@ const css = `
   html, body { margin:0; overflow-x: hidden; max-width: 100%; }
   .nav-item:hover { background: rgba(255,255,255,0.06) !important; }
   .lead-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); transform: translateY(-1px); }
+  .kpi-clickable { cursor: pointer; transition: box-shadow .15s, transform .15s; }
+  .kpi-clickable:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); transform: translateY(-1px); }
+  .kpi-clickable:focus-visible { outline: 2px solid ${KAPPA.teal}; outline-offset: 2px; }
   .row-btn:hover { background: #F8FAFC; }
   input:focus, select:focus, textarea:focus { outline: none; border-color: ${KAPPA.teal} !important; box-shadow: 0 0 0 3px ${KAPPA.teal}22; }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -1467,10 +1649,26 @@ const styles = {
   recentMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 2 },
   chip: { fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap" },
   board: { display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", paddingBottom: 10 },
-  pipeHead: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 },
+  pipeHead: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 12 },
+  pipeHeadMain: { display: "flex", alignItems: "flex-start", gap: 18, flexWrap: "wrap", flex: 1, minWidth: 0 },
   viewToggle: { display: "flex", gap: 4, background: "#EFF2F6", borderRadius: 10, padding: 4 },
   toggleBtn: { display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", color: "#8695A8", padding: "8px 14px", borderRadius: 8, fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   toggleActive: { background: "#fff", color: KAPPA.teal, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
+  filterBar: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", position: "relative", paddingTop: 2 },
+  filterBtnWrap: { position: "relative" },
+  filterBtn: { display: "flex", alignItems: "center", gap: 6, border: "1.5px solid #E2E8F0", background: "#fff", color: "#64748B", padding: "8px 13px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
+  filterBtnActive: { border: `1.5px solid ${KAPPA.teal}`, background: KAPPA.tealSoft, color: KAPPA.tealDark },
+  filterDot: { width: 6, height: 6, borderRadius: "50%", background: KAPPA.teal },
+  filterPopover: { position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 40, background: "#fff", borderRadius: 12, border: "1px solid #EAEEF3", boxShadow: "0 10px 30px rgba(0,0,0,0.12)", padding: 14, minWidth: 230, maxWidth: "calc(100vw - 40px)", display: "flex", flexDirection: "column", gap: 10 },
+  filterPopRow: { display: "flex", gap: 10 },
+  filterPopField: { display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 },
+  filterPopLabel: { fontSize: 11, color: "#94A3B8", fontWeight: 700 },
+  filterPopSelect: { width: "100%", padding: "8px 10px", borderRadius: 8, border: "1.5px solid #E2E8F0", fontSize: 13, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
+  filterPopClear: { alignSelf: "flex-start", background: "none", border: "none", color: KAPPA.tealDark, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: 0 },
+  filterCheckRow: { display: "flex", alignItems: "center", gap: 8, padding: "6px 2px", fontSize: 13, color: KAPPA.ink, cursor: "pointer" },
+  filterCheckDot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
+  filterClearAll: { background: "none", border: "none", color: "#94A3B8", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, textDecoration: "underline", padding: "8px 2px" },
+  filterDateInput: { width: "100%", padding: "8px 8px", borderRadius: 8, border: "1.5px solid #E2E8F0", fontSize: 12.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
   listWrap: { display: "flex", flexDirection: "column", gap: 20, marginTop: 16 },
   listGroup: { background: "#fff", borderRadius: 14, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
   listGroupHead: { display: "flex", alignItems: "center", gap: 9, padding: "14px 18px", borderBottom: "1px solid #F1F5F9", background: "#FAFBFC" },
