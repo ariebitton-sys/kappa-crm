@@ -1,9 +1,9 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import {
   LayoutDashboard, Users, Plus, X, Phone, Mail, Search,
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
-  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical
+  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut
 } from "lucide-react";
 
 // ============ API ============
@@ -21,6 +21,114 @@ const KAPPA = {
   teal: "#1FA9B8", tealDark: "#178793", tealSoft: "#E8F6F8",
   graphite: "#4A4A4A", ink: "#2A2E33",
 };
+
+// ============================================================
+// Google Sign-In — restricted to @kappainv.com
+// ------------------------------------------------------------
+// ⚠️ REPLACE with the real OAuth Client ID before deploying.
+// Google Cloud Console → APIs & Services → Credentials →
+// Create Credentials → OAuth client ID → Web application →
+// add https://kappa-crm.vercel.app under Authorized JavaScript origins.
+const GOOGLE_CLIENT_ID = "297783038765-gg4nu6kfrcp37lao2f3nq9fqiagqpf25.apps.googleusercontent.com";
+const ALLOWED_DOMAIN = "kappainv.com";
+
+function b64urlToBytes(b64url) {
+  const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
+  const b64 = (b64url + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function b64urlToJson(b64url) {
+  return JSON.parse(new TextDecoder().decode(b64urlToBytes(b64url)));
+}
+let _jwksCache = null;
+async function getGoogleJWKS() {
+  if (_jwksCache) return _jwksCache;
+  const res = await fetch("https://www.googleapis.com/oauth2/v3/certs");
+  _jwksCache = await res.json();
+  return _jwksCache;
+}
+// Verifies a Google Identity Services ID token's RS256 signature against
+// Google's live public keys (Web Crypto, no library/backend needed) and
+// checks the core claims. This confirms the token really was issued by
+// Google just now for our client — it is NOT the same as protecting the
+// n8n webhooks themselves, which remain reachable directly by URL.
+async function verifyGoogleIdToken(jwt) {
+  try {
+    const parts = String(jwt).split(".");
+    if (parts.length !== 3) return null;
+    const [h, p, s] = parts;
+    const header = b64urlToJson(h);
+    const payload = b64urlToJson(p);
+    if (payload.aud !== GOOGLE_CLIENT_ID) return null;
+    if (payload.iss !== "https://accounts.google.com" && payload.iss !== "accounts.google.com") return null;
+    if (!payload.exp || payload.exp * 1000 < Date.now()) return null;
+    const jwks = await getGoogleJWKS();
+    const jwk = (jwks.keys || []).find((k) => k.kid === header.kid);
+    if (!jwk) return null;
+    const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, b64urlToBytes(s), new TextEncoder().encode(`${h}.${p}`));
+    return ok ? payload : null;
+  } catch {
+    return null;
+  }
+}
+// Loads the Google Identity Services script once and initializes it,
+// always dispatching to the LATEST onCredential closure via a ref.
+function useGoogleIdentity(onCredential) {
+  const [ready, setReady] = useState(!!(typeof window !== "undefined" && window.google && window.google.accounts));
+  const cbRef = useRef(onCredential);
+  cbRef.current = onCredential;
+  useEffect(() => {
+    if (ready) return;
+    const existing = document.getElementById("google-identity-script");
+    if (existing) { existing.addEventListener("load", () => setReady(true)); return; }
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.async = true; s.defer = true; s.id = "google-identity-script";
+    s.onload = () => setReady(true);
+    document.head.appendChild(s);
+  }, [ready]);
+  useEffect(() => {
+    if (!ready || !window.google || !window.google.accounts) return;
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: (response) => cbRef.current(response),
+      auto_select: false,
+    });
+  }, [ready]);
+  return ready;
+}
+function LoginScreen({ onCredential, error, checking }) {
+  const ready = useGoogleIdentity(onCredential);
+  const btnRef = useRef(null);
+  useEffect(() => {
+    if (ready && btnRef.current && window.google && window.google.accounts) {
+      btnRef.current.innerHTML = "";
+      window.google.accounts.id.renderButton(btnRef.current, {
+        theme: "outline", size: "large", shape: "pill", text: "signin_with", locale: "iw",
+      });
+    }
+  }, [ready]);
+  return (
+    <div dir="rtl" style={styles.loginWrap}>
+      <style>{css}</style>
+      <div style={styles.loginCard}>
+        <div style={styles.loginLogoWrap}><img src="/Logo.jpg" alt="Kappa Real Estate Investments" style={styles.loginLogoImg} /></div>
+        <h2 style={styles.loginTitle}>מערכת ה-CRM של קאפה</h2>
+        <p style={styles.loginSub}>הכניסה מוגבלת לצוות קאפה בלבד (kappainv.com@)</p>
+        <div style={styles.loginBtnWrap}>
+          {!ready && <div style={styles.loginLoadingText}>טוען כניסה עם Google…</div>}
+          <div ref={btnRef} />
+          {checking && <div style={styles.loginLoadingText}>מאמת…</div>}
+        </div>
+        {error && <div style={styles.loginError}>{error}</div>}
+      </div>
+    </div>
+  );
+}
 
 // ============ Pipeline stages ============
 const STAGES = [
@@ -132,6 +240,40 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [journeyPrompt, setJourneyPrompt] = useState(null); // { id, resumeStage } pending move into "interested"
 
+  // ---- Auth (Google Sign-In, restricted to @kappainv.com) ----
+  const [session, setSession] = useState(() => {
+    try {
+      const raw = localStorage.getItem("kappa_auth");
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (!s || !s.exp || s.exp * 1000 < Date.now()) { localStorage.removeItem("kappa_auth"); return null; }
+      return s;
+    } catch { return null; }
+  });
+  const [authError, setAuthError] = useState("");
+  const [authChecking, setAuthChecking] = useState(false);
+  const handleGoogleCredential = useCallback(async (response) => {
+    setAuthChecking(true);
+    const payload = await verifyGoogleIdToken(response && response.credential);
+    setAuthChecking(false);
+    if (!payload) { setAuthError("ההתחברות נכשלה — נסה שוב."); return; }
+    const email = String(payload.email || "").toLowerCase();
+    const domainOk = payload.hd === ALLOWED_DOMAIN || email.endsWith("@" + ALLOWED_DOMAIN);
+    if (!payload.email_verified || !domainOk) {
+      setAuthError("הגישה מוגבלת לצוות קאפה בלבד (kappainv.com@).");
+      return;
+    }
+    const sess = { email: payload.email, name: payload.name || email, picture: payload.picture || "", exp: payload.exp };
+    localStorage.setItem("kappa_auth", JSON.stringify(sess));
+    setAuthError("");
+    setSession(sess);
+  }, []);
+  const signOut = () => {
+    localStorage.removeItem("kappa_auth");
+    if (window.google && window.google.accounts) { try { window.google.accounts.id.disableAutoSelect(); } catch {} }
+    setSession(null);
+  };
+
   const flash = (msg, kind = "ok") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 2600); };
 
   const loadLeads = useCallback(async () => {
@@ -148,7 +290,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { loadLeads(); }, [loadLeads]);
+  useEffect(() => { if (session) loadLeads(); }, [loadLeads, session]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return leads;
@@ -254,6 +396,10 @@ export default function App() {
     }
   };
 
+  if (!session) {
+    return <LoginScreen onCredential={handleGoogleCredential} error={authError} checking={authChecking} />;
+  }
+
   return (
     <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
@@ -286,6 +432,15 @@ export default function App() {
           {stats.dueCalls > 0 && (
             <div style={{ ...styles.dueBadge, ...(isMobile ? styles.dueBadgeMobile : {}) }}><CalendarClock size={16} />{isMobile ? ` ${stats.dueCalls}` : ` ${stats.dueCalls} שיחות להיום`}</div>
           )}
+          <div style={styles.userChip} title={session.email}>
+            {session.picture
+              ? <img src={session.picture} alt={session.name} style={styles.userAvatarImg} referrerPolicy="no-referrer" />
+              : <div style={styles.userAvatarFallback}>{initials(session.name)}</div>}
+            {!isMobile && <span style={styles.userChipName}>{session.name}</span>}
+            <button style={styles.userSignOutBtn} onClick={signOut} title="התנתק" aria-label="התנתק">
+              <LogOut size={15} />
+            </button>
+          </div>
         </header>
 
         <div style={{ ...styles.content, ...(isMobile ? styles.contentMobile : {}) }}>
@@ -1092,14 +1247,28 @@ function Detail({ label, value, highlight }) {
 function AddLead({ onClose, onSave }) {
   const [f, setF] = useState({
     name: "", phone: "", email: "", campaign: CAMPAIGNS[0], referrer: "",
-    amount: "", track: TRACKS[0], stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
+    stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
   });
+  const [invRows, setInvRows] = useState([{ track: "", amount: "", compound: false }]);
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const valid = f.name.trim().length > 0;
   const submit = async () => {
     setSaving(true);
-    await onSave({ ...f, amount: f.amount ? Number(f.amount) : "" });
+    // Same cleanup/aggregation as the lead editor, so a lead created here
+    // looks and behaves identically to one edited afterwards.
+    const clean = invRows.filter((r) => r.track && (Number(r.amount) || 0) > 0).map((r) => {
+      const o = { track: r.track, amount: Number(r.amount) || 0 };
+      if (isCompoundEligible(r.track)) o.compound = !!r.compound;
+      return o;
+    });
+    const payload = {
+      ...f,
+      investments: JSON.stringify(clean),
+      amount: investmentsTotal(clean),
+      track: investmentsTracksLabel(clean),
+    };
+    await onSave(payload);
     setSaving(false);
   };
   return (
@@ -1123,21 +1292,18 @@ function AddLead({ onClose, onSave }) {
             </Field>
             <Field label="גורם מפנה"><input style={styles.input} value={f.referrer} onChange={(e) => set("referrer", e.target.value)} /></Field>
           </div>
+          <InvestmentsEditor rows={invRows} onChange={setInvRows} />
           <div style={styles.fieldRow}>
-            <Field label="סכום השקעה ($)"><input style={styles.input} type="number" value={f.amount} onChange={(e) => set("amount", e.target.value)} dir="ltr" /></Field>
-            <Field label="אפיק השקעה">
-              <select style={styles.input} value={f.track} onChange={(e) => set("track", e.target.value)}>
-                {TRACKS.map((t) => <option key={t}>{t}</option>)}
-              </select>
-            </Field>
-          </div>
-          <div style={styles.fieldRow}>
-            <DateField label="מועד שיחה הבאה" value={f.next_call} onChange={(v) => set("next_call", v)} />
             <Field label="שלב">
               <select style={styles.input} value={f.stage} onChange={(e) => set("stage", e.target.value)}>
                 {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
               </select>
             </Field>
+            <DateField label="מועד שיחה הבאה" value={f.next_call} onChange={(v) => set("next_call", v)} />
+          </div>
+          <div style={styles.fieldRow}>
+            <DateField label="מועד פגישה" value={f.meeting_date} onChange={(v) => set("meeting_date", v)} />
+            <DateField label="קשר אחרון" value={f.last_contact} onChange={(v) => set("last_contact", v)} />
           </div>
           <Field label="סיכום שיחה"><textarea style={{ ...styles.input, minHeight: 80, resize: "vertical" }} value={f.summary} onChange={(e) => set("summary", e.target.value)} /></Field>
           <button style={{ ...styles.saveBtn, opacity: valid && !saving ? 1 : 0.5, cursor: valid && !saving ? "pointer" : "not-allowed" }}
@@ -1154,15 +1320,50 @@ function Field({ label, children }) {
 }
 
 // Native date picker that stores/reads dd/mm/yyyy so the sheet + logic stay unchanged.
+// The input's `value` is driven by LOCAL state, not recomputed from the parent
+// prop on every render. Native <input type="date"> reports "" for every
+// in-progress keystroke while a segment is incomplete (e.g. typing the year
+// digit by digit with day/month already filled) — that's normal, not a clear.
+// If we fed that "" straight back into the parent and re-derived the DOM
+// value from it, React would force the input's value to "", which resets
+// ALL segments (day + month too), making the year impossible to finish
+// typing. Keeping local state in sync with whatever the DOM just reported
+// avoids fighting the browser mid-edit; we only propagate to the parent once
+// a full valid date is typed (immediate feedback), or on blur if the field
+// was left incomplete/cleared (explicit commit of the clear).
+const DATE_COMPLETE = /^\d{4}-\d{2}-\d{2}$/;
 function DateField({ label, value, onChange }) {
+  const [localISO, setLocalISO] = useState(() => dmyToISO(value));
+  const focusedRef = useRef(false);
+
+  // Sync from the parent only when not actively focused/typing — e.g. the
+  // form was reset (cancel/save) or switched to a different lead.
+  useEffect(() => {
+    if (!focusedRef.current) setLocalISO(dmyToISO(value));
+  }, [value]);
+
   return (
     <Field label={label}>
       <input
         type="date"
         style={{ ...styles.input, minHeight: 44 }}
-        value={dmyToISO(value)}
-        onChange={(e) => onChange(isoToDMY(e.target.value))}
+        value={localISO}
         dir="ltr"
+        onFocus={() => { focusedRef.current = true; }}
+        onChange={(e) => {
+          const iso = e.target.value;
+          setLocalISO(iso);
+          if (DATE_COMPLETE.test(iso)) onChange(isoToDMY(iso));
+        }}
+        onBlur={() => {
+          focusedRef.current = false;
+          if (!DATE_COMPLETE.test(localISO) && localISO !== dmyToISO(value)) {
+            // Left mid-typed or cleared — commit the clear rather than
+            // silently keeping a stale value the field no longer shows.
+            setLocalISO("");
+            onChange("");
+          }
+        }}
       />
     </Field>
   );
@@ -1221,10 +1422,24 @@ const styles = {
   addBtn: { width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "12px", borderRadius: 11, background: KAPPA.teal, color: "#fff", border: "none", cursor: "pointer", fontSize: 14.5, fontWeight: 700, fontFamily: FONT },
   main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   topbar: { height: 66, background: "#fff", borderBottom: "1px solid #EAEEF3", display: "flex", alignItems: "center", gap: 12, padding: "0 26px", flexShrink: 0 },
-  searchWrap: { display: "flex", alignItems: "center", gap: 9, background: "#F4F6F9", borderRadius: 10, padding: "9px 14px", flex: 1, maxWidth: 440 },
+  searchWrap: { display: "flex", alignItems: "center", gap: 9, background: "#F4F6F9", borderRadius: 10, padding: "9px 14px", flex: 1, maxWidth: 440, minWidth: 0 },
   search: { border: "none", background: "transparent", outline: "none", fontSize: 14, flex: 1, fontFamily: FONT, color: KAPPA.ink },
   refreshBtn: { width: 38, height: 38, borderRadius: 9, border: "1px solid #EAEEF3", background: "#fff", display: "grid", placeItems: "center", cursor: "pointer", color: KAPPA.graphite },
   dueBadge: { display: "flex", alignItems: "center", gap: 7, background: "#FEF2F2", color: "#EF4444", padding: "8px 13px", borderRadius: 9, fontSize: 13, fontWeight: 700 },
+  userChip: { display: "flex", alignItems: "center", gap: 8, background: "#F4F6F9", borderRadius: 30, padding: "5px 6px 5px 10px", flexShrink: 0 },
+  userAvatarImg: { width: 30, height: 30, borderRadius: "50%", objectFit: "cover", flexShrink: 0 },
+  userAvatarFallback: { width: 30, height: 30, borderRadius: "50%", background: KAPPA.teal, color: "#fff", display: "grid", placeItems: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 },
+  userChipName: { fontSize: 13, fontWeight: 600, color: KAPPA.ink, whiteSpace: "nowrap" },
+  userSignOutBtn: { width: 26, height: 26, borderRadius: "50%", border: "none", background: "transparent", color: "#94A3B8", display: "grid", placeItems: "center", cursor: "pointer", flexShrink: 0 },
+  loginWrap: { minHeight: "100dvh", width: "100%", display: "grid", placeItems: "center", background: "#F4F6F9", fontFamily: FONT, padding: 20 },
+  loginCard: { width: "100%", maxWidth: 380, background: "#fff", borderRadius: 18, padding: "38px 32px", textAlign: "center", boxShadow: "0 10px 40px rgba(0,0,0,0.08)" },
+  loginLogoWrap: { marginBottom: 18 },
+  loginLogoImg: { width: 190, maxWidth: "100%", height: "auto", margin: "0 auto", display: "block" },
+  loginTitle: { fontSize: 19, fontWeight: 800, color: KAPPA.ink, margin: "0 0 6px" },
+  loginSub: { fontSize: 13.5, color: "#7d888c", margin: "0 0 26px", lineHeight: 1.6 },
+  loginBtnWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 10, minHeight: 44 },
+  loginLoadingText: { fontSize: 13, color: "#94A3B8" },
+  loginError: { marginTop: 18, background: "#FEF2F2", color: "#EF4444", fontSize: 13, fontWeight: 600, borderRadius: 9, padding: "10px 14px", lineHeight: 1.5 },
   content: { flex: 1, overflowY: "auto", padding: "28px 30px" },
   pageTitle: { fontSize: 25, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
   pageSub: { fontSize: 14, color: "#8695A8", margin: "0 0 24px" },
