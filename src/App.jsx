@@ -305,7 +305,11 @@ export default function App() {
     const active = leads.filter((l) => l.stage !== "lost");
     const interested = leads.filter((l) => l.stage === "interested");
     const closed = leads.filter((l) => l.stage === "closed");
-    const pipeline = active.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+    // "Potential in the funnel" = only leads still actively moving through
+    // the funnel (new → contact → meeting → future → interested) — excludes
+    // closed (already won) and lost, which no longer represent open potential.
+    const FUNNEL_STAGES = ["new", "contact", "meeting", "future", "interested"];
+    const pipeline = leads.filter((l) => FUNNEL_STAGES.includes(l.stage)).reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const committed = [...interested, ...closed].reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const dueCalls = leads.filter((l) => l.stage !== "closed" && l.stage !== "lost" && isDue(l.next_call)).length;
     return { total: active.length, interested: interested.length, pipeline, committed, dueCalls };
@@ -570,11 +574,11 @@ function Dashboard({ stats, leads, onOpen }) {
   return (
     <div>
       <h1 style={styles.pageTitle}>סקירה כללית</h1>
-      <p style={styles.pageSub}>תמונת מצב של צנרת המשקיעים</p>
+      <p style={styles.pageSub}>תמונת מצב של משפך המשקיעים</p>
       <div style={styles.kpiRow} className="kpi-row">
         <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים פעילים" value={stats.total} />
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} />
-        <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="פוטנציאל בצנרת" value={fmtMoney(stats.pipeline)} />
+        <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="פוטנציאל במשפך לידים" value={fmtMoney(stats.pipeline)} />
         <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="התחייבו / סגרו" value={fmtMoney(stats.committed)} />
       </div>
       <div style={styles.dashGrid} className="dash-grid">
