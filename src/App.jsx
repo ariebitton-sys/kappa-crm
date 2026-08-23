@@ -156,7 +156,7 @@ const DATE_FILTER_FIELDS = [
 
 const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "העברה בנקאית", "גישה לאגורה", "פרטי תשלום ראשון"];
 
-const CAMPAIGNS = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "זוביזר", "אתר"];
+const CAMPAIGNS = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "אתר אינטרנט - SEO", "PPC", "אחר"];
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
 // Tracks that support compound interest (ריבית דריבית). Only these show the toggle.
 const COMPOUND_TRACKS = ["Multi Single", "Brick Capital"];
@@ -472,7 +472,7 @@ export default function App() {
             <div style={styles.brandLogoWrap}><img src="/Logo.jpg" alt="Kappa Real Estate Investments" style={styles.brandLogoImg} /></div>
           </div>
           <nav style={styles.nav}>
-            <NavItem icon={<LayoutDashboard size={19} />} label="סקירה" active={view === "dashboard"} onClick={() => setView("dashboard")} />
+            <NavItem icon={<LayoutDashboard size={19} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
@@ -522,7 +522,7 @@ export default function App() {
         <>
           <button style={styles.fab} onClick={() => setAdding(true)} aria-label="ליד חדש"><Plus size={26} /></button>
           <nav style={styles.bottomNav}>
-            <BottomNavItem icon={<LayoutDashboard size={22} />} label="סקירה" active={view === "dashboard"} onClick={() => setView("dashboard")} />
+            <BottomNavItem icon={<LayoutDashboard size={22} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <BottomNavItem icon={<Users size={22} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
             <BottomNavItem icon={<Target size={22} />} label="ליווי" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
@@ -672,21 +672,27 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
           </div>
         </div>
       </div>
+      <div style={styles.callsDivider}>
+        <span style={styles.callsDividerLine} />
+        <span style={styles.callsDividerLabel}><Phone size={14} /> מעקב שיחות</span>
+        <span style={styles.callsDividerLine} />
+      </div>
       <div style={styles.dashGrid} className="dash-grid">
-        <CallList title="שיחות שעבר זמנן" tint="#EF4444" items={overdue} emptyText="אין שיחות באיחור 🎉" onOpen={onOpen} />
-        <CallList title="שיחות קרובות" tint={KAPPA.teal} items={upcoming} emptyText="אין שיחות מתוזמנות" onOpen={onOpen} />
+        <CallList title="שיחות שעבר זמנן" tint="#EF4444" icon={<Clock size={17} />} items={overdue} emptyText="אין שיחות באיחור 🎉" onOpen={onOpen} />
+        <CallList title="שיחות קרובות" tint={KAPPA.teal} icon={<CalendarClock size={17} />} items={upcoming} emptyText="אין שיחות מתוזמנות" onOpen={onOpen} />
       </div>
     </div>
   );
 }
 
 // A dashboard block listing leads by their next_call date.
-function CallList({ title, tint, items, emptyText, onOpen }) {
+function CallList({ title, tint, icon, items, emptyText, onOpen }) {
   return (
-    <div style={styles.card}>
-      <div style={styles.cardHead}>
-        <h3 style={styles.cardTitle}><span style={{ ...styles.callDotBig, background: tint }} /> {title}</h3>
-        <span style={styles.callCount}>{items.length}</span>
+    <div style={{ ...styles.callCard, borderTop: `4px solid ${tint}` }}>
+      <div style={styles.callCardHead}>
+        <div style={{ ...styles.callCardIconBadge, background: tint + "18", color: tint }}>{icon}</div>
+        <h3 style={styles.callCardTitle}>{title}</h3>
+        <span style={{ ...styles.callCount, background: tint + "18", color: tint }}>{items.length}</span>
       </div>
       <div>
         {items.length === 0 && <div style={styles.callEmpty}>{emptyText}</div>}
@@ -1324,11 +1330,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
               <Field label="אימייל"><input style={styles.input} value={f.email || ""} onChange={(e) => set("email", e.target.value)} dir="ltr" /></Field>
             </div>
             <div style={styles.fieldRow}>
-              <Field label="קמפיין">
-                <select style={styles.input} value={f.campaign || ""} onChange={(e) => set("campaign", e.target.value)}>
-                  <option value="">—</option>{CAMPAIGNS.map((c) => <option key={c}>{c}</option>)}
-                </select>
-              </Field>
+              <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
               <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
             </div>
             <InvestmentsEditor rows={invRows} onChange={setInvRows} />
@@ -1602,11 +1604,7 @@ function AddLead({ onClose, onSave }) {
             <Field label="אימייל"><input style={styles.input} value={f.email} onChange={(e) => set("email", e.target.value)} dir="ltr" /></Field>
           </div>
           <div style={styles.fieldRow}>
-            <Field label="קמפיין">
-              <select style={styles.input} value={f.campaign} onChange={(e) => set("campaign", e.target.value)}>
-                {CAMPAIGNS.map((c) => <option key={c}>{c}</option>)}
-              </select>
-            </Field>
+            <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
             <Field label="גורם מפנה"><input style={styles.input} value={f.referrer} onChange={(e) => set("referrer", e.target.value)} /></Field>
           </div>
           <InvestmentsEditor rows={invRows} onChange={setInvRows} />
@@ -1682,6 +1680,37 @@ function DateField({ label, value, onChange }) {
           }
         }}
       />
+    </Field>
+  );
+}
+
+// Campaign picker with a free-text "אחר" (other) option. The select and the
+// custom-text field share one underlying value: choosing a listed campaign
+// stores it directly; choosing "אחר" (or any legacy/custom value not in the
+// list) reveals a text box, and whatever is typed there becomes the actual
+// stored value — so reporting downstream sees the real campaign name, not
+// a generic "אחר".
+function CampaignField({ value, onChange }) {
+  const KNOWN = CAMPAIGNS.filter((c) => c !== "אחר");
+  const isOther = !!value && !KNOWN.includes(value);
+  return (
+    <Field label="קמפיין">
+      <select
+        style={styles.input}
+        value={isOther ? "אחר" : (value || "")}
+        onChange={(e) => { const v = e.target.value; onChange(v === "אחר" ? "אחר" : v); }}
+      >
+        {!value && <option value="" disabled hidden />}
+        {CAMPAIGNS.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+      {isOther && (
+        <input
+          style={{ ...styles.input, marginTop: 8 }}
+          value={value === "אחר" ? "" : value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="פרט…"
+        />
+      )}
     </Field>
   );
 }
@@ -1828,8 +1857,15 @@ const styles = {
   invViewMode: { fontSize: 12, fontWeight: 600, minWidth: 78, textAlign: "left" },
   expandBtn: { width: "100%", padding: "8px", marginTop: 4, borderRadius: 8, border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.teal, fontWeight: 700, fontSize: 12.5, fontFamily: FONT, cursor: "pointer" },
   callDotBig: { display: "inline-block", width: 9, height: 9, borderRadius: "50%", marginLeft: 7, verticalAlign: "middle" },
-  callCount: { fontSize: 13, fontWeight: 700, color: "#94A3B8", background: "#F1F5F9", borderRadius: 20, padding: "2px 10px" },
+  callCount: { fontSize: 13, fontWeight: 700, borderRadius: 20, padding: "2px 10px" },
   callEmpty: { padding: "22px", textAlign: "center", color: "#B6C2CE", fontSize: 13.5, fontWeight: 600 },
+  callsDivider: { display: "flex", alignItems: "center", gap: 14, margin: "38px 0 18px" },
+  callsDividerLine: { flex: 1, height: 1, background: "#E2E8F0" },
+  callsDividerLabel: { display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 700, color: "#8695A8", whiteSpace: "nowrap" },
+  callCard: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
+  callCardHead: { display: "flex", alignItems: "center", gap: 11, padding: "16px 20px 12px" },
+  callCardIconBadge: { width: 34, height: 34, borderRadius: 10, display: "grid", placeItems: "center", flexShrink: 0 },
+  callCardTitle: { fontSize: 15.5, fontWeight: 800, margin: 0, color: KAPPA.ink, flex: 1 },
   listDragHandle: { display: "grid", placeItems: "center", border: "none", background: "transparent", cursor: "grab", padding: 4, flexShrink: 0, touchAction: "none" },
   listEmpty: { padding: "14px 18px", fontSize: 13, color: "#B6C2CE", textAlign: "center", fontWeight: 600 },
   col: { width: 264, flexShrink: 0, background: "#EFF2F6", borderRadius: 14, padding: 10, maxHeight: "calc(100vh - 210px)", display: "flex", flexDirection: "column" },
