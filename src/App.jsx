@@ -193,6 +193,13 @@ const fmtMoney = (n) => {
 };
 const initials = (name) => (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
 const todayStr = () => new Date().toLocaleDateString("en-GB");
+// The notes field is append-only (one entry per line); card previews should
+// show only the most recent entry, not the whole run-together history.
+const lastNote = (summary) => {
+  if (!summary) return "";
+  const parts = String(summary).split("\n").map((s) => s.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+};
 // Parse a dd/mm/yyyy string into a Date (or null if invalid/empty).
 const parseDMY = (s) => {
   if (!s) return null;
@@ -1116,7 +1123,7 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile }) {
         <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
         <span style={styles.leadName}>{lead.name}</span>
       </div>
-      {lead.summary && <p style={styles.leadSummary}>{lead.summary}</p>}
+      {lead.summary && <p style={styles.leadSummary}>{lastNote(lead.summary)}</p>}
       <div style={styles.leadTags}>
         {Number(lead.amount) > 0 && <span style={styles.leadTag}><DollarSign size={11} />{Math.round(Number(lead.amount) / 1000)}K</span>}
         {lead.track && <span style={styles.leadTag}>{lead.track}</span>}
@@ -1329,7 +1336,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
               <DateField label="קשר אחרון" value={f.last_contact || ""} onChange={(v) => set("last_contact", v)} />
             </div>
             <DateField label="מועד שיחה הבאה" value={f.next_call || ""} onChange={(v) => set("next_call", v)} />
-            <Field label="סיכום שיחה"><textarea style={{ ...styles.input, minHeight: 100, resize: "vertical" }} value={f.summary || ""} onChange={(e) => set("summary", e.target.value)} /></Field>
+            <Field label="סיכום שיחה והערות"><textarea style={{ ...styles.input, minHeight: 100, resize: "vertical" }} value={f.summary || ""} onChange={(e) => set("summary", e.target.value)} /></Field>
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
               <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={save}>{saving ? "שומר…" : "שמור שינויים"}</button>
               <button style={styles.cancelBtn} onClick={cancel}>ביטול</button>
@@ -1387,12 +1394,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
               </div>
             </div>
           )}
-          {lead.summary && (
-            <div style={styles.summaryBox}>
-              <div style={styles.summaryLabel}>סיכום שיחה אחרונה</div>
-              <p style={styles.summaryText}>{lead.summary}</p>
-            </div>
-          )}
+          <SummaryNotes lead={lead} onSave={onSave} />
           {isInterested && (
             <div style={styles.journeyPromo} className="journey-promo">
               <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
@@ -1422,6 +1424,47 @@ function Detail({ label, value, highlight }) {
     <div style={styles.detail}>
       <div style={styles.detailLabel}>{label}</div>
       <div style={{ ...styles.detailValue, color: highlight ? "#EF4444" : KAPPA.ink }}>{value}</div>
+    </div>
+  );
+}
+
+// Notes are append-only: existing history stays as read-only text, and a new
+// entry (dated) is added at the end and saved immediately — no need to open
+// the full edit drawer just to jot something down.
+function SummaryNotes({ lead, onSave }) {
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const addNote = async () => {
+    const text = draft.trim();
+    if (!text || saving) return;
+    setSaving(true);
+    const stamp = todayStr();
+    const entry = `[${stamp}] ${text}`;
+    const merged = lead.summary ? `${lead.summary}\n${entry}` : entry;
+    try {
+      await onSave({ ...lead, summary: merged });
+      setDraft("");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div style={styles.summaryBox}>
+      <div style={styles.summaryLabel}>סיכום שיחה והערות</div>
+      {lead.summary && <p style={styles.summaryText}>{lead.summary}</p>}
+      <div style={styles.summaryAddRow}>
+        <textarea
+          style={styles.summaryAddInput}
+          placeholder="הוסף הערה…"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addNote(); } }}
+        />
+        <button style={{ ...styles.summaryAddBtn, opacity: draft.trim() && !saving ? 1 : 0.5, cursor: draft.trim() && !saving ? "pointer" : "not-allowed" }}
+          disabled={!draft.trim() || saving} onClick={addNote}>
+          {saving ? "שומר…" : "הוסף"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1488,7 +1531,7 @@ function AddLead({ onClose, onSave }) {
             <DateField label="מועד פגישה" value={f.meeting_date} onChange={(v) => set("meeting_date", v)} />
             <DateField label="קשר אחרון" value={f.last_contact} onChange={(v) => set("last_contact", v)} />
           </div>
-          <Field label="סיכום שיחה"><textarea style={{ ...styles.input, minHeight: 80, resize: "vertical" }} value={f.summary} onChange={(e) => set("summary", e.target.value)} /></Field>
+          <Field label="סיכום שיחה והערות"><textarea style={{ ...styles.input, minHeight: 80, resize: "vertical" }} value={f.summary} onChange={(e) => set("summary", e.target.value)} /></Field>
           <button style={{ ...styles.saveBtn, opacity: valid && !saving ? 1 : 0.5, cursor: valid && !saving ? "pointer" : "not-allowed" }}
             disabled={!valid || saving} onClick={submit}>
             {saving ? "מוסיף…" : "הוסף ליד"}
@@ -1753,7 +1796,10 @@ const styles = {
   detailValue: { fontSize: 14, fontWeight: 700 },
   summaryBox: { background: "#F8FAFC", borderRadius: 12, padding: "15px 16px", marginBottom: 18 },
   summaryLabel: { fontSize: 12, color: "#94A3B8", fontWeight: 600, marginBottom: 7 },
-  summaryText: { fontSize: 13.5, color: KAPPA.graphite, lineHeight: 1.7, margin: 0 },
+  summaryText: { fontSize: 13.5, color: KAPPA.graphite, lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" },
+  summaryAddRow: { display: "flex", gap: 8, alignItems: "flex-end" },
+  summaryAddInput: { flex: 1, minWidth: 0, padding: "9px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 13.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff", resize: "vertical", minHeight: 38, maxHeight: 120, lineHeight: 1.5 },
+  summaryAddBtn: { flexShrink: 0, padding: "9px 16px", borderRadius: 9, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   journeyPromo: { background: `linear-gradient(135deg, ${KAPPA.tealSoft}, #F0FBFC)`, borderRadius: 14, padding: "18px", marginBottom: 18, border: `1px solid ${KAPPA.teal}22` },
   promoHead: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: KAPPA.tealDark, marginBottom: 18 },
   stageSwitch: { marginTop: 4 },
