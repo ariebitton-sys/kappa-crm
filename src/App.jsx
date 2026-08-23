@@ -14,6 +14,7 @@ const API = {
   add:    `${API_BASE}/crm/lead/add`,
   update: `${API_BASE}/crm/lead/update`,
   stage:  `${API_BASE}/crm/lead/stage`,
+  summarize: `${API_BASE}/crm/lead/summarize`,
 };
 
 // ============ Kappa brand ============
@@ -1395,6 +1396,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
             </div>
           )}
           <SummaryNotes lead={lead} onSave={onSave} />
+          <MeetingAISummary lead={lead} onSave={onSave} />
           {isInterested && (
             <div style={styles.journeyPromo} className="journey-promo">
               <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
@@ -1465,6 +1467,95 @@ function SummaryNotes({ lead, onSave }) {
           {saving ? "שומר…" : "הוסף"}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Two ways in: paste a link to the Google Meet "Take notes for me" doc
+// (for reference — Google doesn't expose an API to fetch its content), or
+// paste the transcript/notes text itself and have AI condense it. The link
+// and the AI summary are saved as their own fields, separate from the
+// manual notes log above.
+function MeetingAISummary({ lead, onSave }) {
+  const [link, setLink] = useState(lead.meeting_link || "");
+  const [transcript, setTranscript] = useState(lead.transcript_text || "");
+  const [summarizing, setSummarizing] = useState(false);
+  const [error, setError] = useState("");
+  const linkFocusedRef = useRef(false);
+
+  useEffect(() => { if (!linkFocusedRef.current) setLink(lead.meeting_link || ""); }, [lead.meeting_link]);
+  useEffect(() => { setTranscript(lead.transcript_text || ""); }, [lead.id]);
+
+  const saveLink = async () => {
+    if (link === (lead.meeting_link || "")) return;
+    await onSave({ ...lead, meeting_link: link });
+  };
+
+  const summarize = async () => {
+    const text = transcript.trim();
+    if (!text || summarizing) return;
+    setSummarizing(true);
+    setError("");
+    try {
+      const res = await fetch(API.summarize, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const summary = (data.summary || "").trim();
+      if (!summary) throw new Error("empty");
+      await onSave({ ...lead, transcript_text: text, ai_summary: summary });
+    } catch {
+      setError("הסיכום נכשל — נסה שוב, או פנה לתמיכה אם זה חוזר.");
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
+  return (
+    <div style={styles.summaryBox}>
+      <div style={styles.summaryLabel}>סיכום פגישה עם AI · Google Meet</div>
+      <Field label="קישור לסיכום השיחה">
+        <input
+          style={styles.input}
+          dir="ltr"
+          placeholder="https://docs.google.com/…"
+          value={link}
+          onFocus={() => { linkFocusedRef.current = true; }}
+          onChange={(e) => setLink(e.target.value)}
+          onBlur={() => { linkFocusedRef.current = false; saveLink(); }}
+        />
+      </Field>
+      {lead.meeting_link && (
+        <a href={lead.meeting_link} target="_blank" rel="noopener noreferrer" style={styles.meetingLinkOpen}>
+          <ArrowLeft size={14} /> פתח את המסמך
+        </a>
+      )}
+      <div style={{ marginTop: 12 }}>
+        <Field label="תמלול / טקסט לסיכום (הדבק מתוך המסמך)">
+          <textarea
+            style={{ ...styles.input, minHeight: 90, resize: "vertical" }}
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            placeholder="הדבק כאן את הסיכום או התמלול מ-Take notes for me…"
+          />
+        </Field>
+      </div>
+      <button
+        style={{ ...styles.summaryAddBtn, opacity: transcript.trim() && !summarizing ? 1 : 0.5, cursor: transcript.trim() && !summarizing ? "pointer" : "not-allowed", marginTop: 4 }}
+        disabled={!transcript.trim() || summarizing}
+        onClick={summarize}
+      >
+        {summarizing ? "מסכם…" : "סכם עם AI ✨"}
+      </button>
+      {error && <div style={styles.aiSummaryError}>{error}</div>}
+      {lead.ai_summary && (
+        <div style={styles.aiSummaryResult}>
+          <div style={{ ...styles.summaryLabel, color: KAPPA.tealDark }}>סיכום AI</div>
+          <p style={styles.summaryText}>{lead.ai_summary}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1800,6 +1891,9 @@ const styles = {
   summaryAddRow: { display: "flex", gap: 8, alignItems: "flex-end" },
   summaryAddInput: { flex: 1, minWidth: 0, padding: "9px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 13.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff", resize: "vertical", minHeight: 38, maxHeight: 120, lineHeight: 1.5 },
   summaryAddBtn: { flexShrink: 0, padding: "9px 16px", borderRadius: 9, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  meetingLinkOpen: { display: "inline-flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12.5, fontWeight: 700, color: KAPPA.tealDark, textDecoration: "none" },
+  aiSummaryError: { color: "#EF4444", fontSize: 12.5, marginTop: 8, fontWeight: 600 },
+  aiSummaryResult: { marginTop: 14, background: "#fff", borderRadius: 10, padding: "12px 14px", border: `1px solid ${KAPPA.teal}33` },
   journeyPromo: { background: `linear-gradient(135deg, ${KAPPA.tealSoft}, #F0FBFC)`, borderRadius: 14, padding: "18px", marginBottom: 18, border: `1px solid ${KAPPA.teal}22` },
   promoHead: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: KAPPA.tealDark, marginBottom: 18 },
   stageSwitch: { marginTop: 4 },
