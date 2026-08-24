@@ -393,25 +393,32 @@ export default function App() {
     }
     // Fresh entry (never started a journey) → start at 0.
     const isFresh = stage === "interested" && (lead.journey_stage === "" || lead.journey_stage == null);
-    commitMove(id, stage, isFresh ? { journeyStage: 0 } : {});
+    commitMove(id, stage, isFresh ? { journeyStage: 0, journeyDone: 0 } : {});
   };
 
   // Performs the actual stage change and syncs to CRM.
-  // opts: { journeyStage } = explicit journey_stage to write (0 = restart);
+  // opts: { journeyStage, journeyDone } = explicit reset (0 = restart, wipes
+  //          the "done" checkmarks too — a restart must look fully reset,
+  //          not show old approved steps still checked off);
   //       { resumeStage }  = resume an existing journey → n8n resends the
-  //                          current-stage reminder to investor + admin.
+  //                          current-stage reminder to investor + admin,
+  //                          and journey_done is left untouched since the
+  //                          investor's real prior approvals still count.
   const commitMove = async (id, stage, opts = {}) => {
     const prev = leads;
     const patch = { stage };
     if (opts.journeyStage != null) patch.journey_stage = opts.journeyStage;
+    if (opts.journeyDone != null) patch.journey_done = opts.journeyDone;
     if (opts.resumeStage != null) patch.journey_stage = opts.resumeStage;
     setLeads((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
     if (selected && selected.id === id) setSelected((s) => ({ ...s, ...patch }));
     try {
-      // Only send journey_stage / resume_stage when explicitly set. Moving a
-      // lead OUT of "interested" sends neither, so the sheet keeps its value.
+      // Only send journey_stage / journey_done / resume_stage when explicitly
+      // set. Moving a lead OUT of "interested" sends none of these, so the
+      // sheet keeps its existing values.
       const body = { id, stage };
       if (opts.journeyStage != null) body.journey_stage = opts.journeyStage;
+      if (opts.journeyDone != null) body.journey_done = opts.journeyDone;
       if (opts.resumeStage != null) body.resume_stage = opts.resumeStage;
       const res = await fetch(API.stage, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -552,7 +559,7 @@ export default function App() {
               </button>
               <button
                 style={styles.confirmSecondary}
-                onClick={() => { commitMove(journeyPrompt.id, "interested", { journeyStage: 0 }); setJourneyPrompt(null); }}>
+                onClick={() => { commitMove(journeyPrompt.id, "interested", { journeyStage: 0, journeyDone: 0 }); setJourneyPrompt(null); }}>
                 התחל מחדש
               </button>
             </div>
