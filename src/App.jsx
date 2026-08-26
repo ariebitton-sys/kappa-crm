@@ -294,8 +294,8 @@ export default function App() {
 
   const flash = (msg, kind = "ok") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 2600); };
 
-  const loadLeads = useCallback(async () => {
-    setStatus("loading");
+  const loadLeads = useCallback(async (silent = false) => {
+    if (silent !== true) setStatus("loading");
     try {
       const res = await fetch(API.leads);
       if (!res.ok) throw new Error("bad status " + res.status);
@@ -304,11 +304,21 @@ export default function App() {
       setLeads(rows);
       setStatus("ready");
     } catch (e) {
-      setStatus("error");
+      if (silent !== true) setStatus("error");
     }
   }, []);
 
   useEffect(() => { if (session) loadLeads(); }, [loadLeads, session]);
+
+  // רענון שקט ברקע כל 30 שניות, כדי שסטטוסים שמתעדכנים מבחוץ (למשל התקדמות מסע ליווי משקיעים
+  // דרך לחיצה על קישור במייל) יופיעו בלי צורך ברענון ידני. לא מרענן כשהטאב לא פעיל בדפדפן.
+  useEffect(() => {
+    if (!session) return;
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") loadLeads(true);
+    }, 30000);
+    return () => clearInterval(id);
+  }, [session, loadLeads]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return leads;
