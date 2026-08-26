@@ -1416,92 +1416,92 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
         </div>
         <div style={{ ...styles.drawerBody, ...(maximized ? { padding: "28px 48px" } : {}) }} className="drawer-body">
           {(() => {
-            const primary = (
-              <>
-                <div style={styles.drawerTop}>
-                  <div style={{ ...styles.avatarLg, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
-                  <h2 style={styles.drawerName}>{lead.name}</h2>
-                  {lead.referrer && <div style={styles.drawerRef}>הופנה ע"י {lead.referrer}</div>}
-                </div>
-                <div style={styles.contactRow}>
-                  {lead.phone && <a href={`tel:${lead.phone}`} style={styles.contactBtn}><Phone size={16} />{lead.phone}</a>}
-                  {lead.email && (
-                    isMobile
-                      ? <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
-                      : <a href={`https://mail.google.com/mail/u/arie@kappainv.com/?view=cm&fs=1&to=${encodeURIComponent(lead.email)}`} target="_blank" rel="noopener noreferrer" style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
-                  )}
-                </div>
-                <div style={styles.detailGrid}>
-                  <Detail label="קמפיין" value={lead.campaign || "—"} />
-                  <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
-                  <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
-                  <Detail label="קשר אחרון" value={lead.last_contact || "—"} />
-                  <Detail label="שיחה הבאה" value={lead.next_call || "—"} highlight={isDue(lead.next_call)} />
-                </div>
-                <InvestmentsView lead={lead} />
-                {isLost && (
-                  <div style={styles.reasonBox}>
-                    <div style={styles.summaryLabel}>סיבה</div>
-                    <div style={styles.reasonBtns}>
-                      {LOST_REASONS.map((r) => (
-                        <button key={r} onClick={() => saveReason(r)} style={{
-                          ...styles.reasonBtn,
-                          background: lead.lost_reason === r ? ARCHIVE_COLOR : "#F1F5F9",
-                          color: lead.lost_reason === r ? "#fff" : KAPPA.graphite,
-                        }}>{r}</button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {!maximized && (
-                  <div style={styles.stageSwitch}>
-                    <div style={styles.switchLabel}>שינוי שלב</div>
-                    <div style={styles.switchBtns}>
-                      {STAGES.map((s) => (
-                        <button key={s.id} onClick={() => onMove(s.id)} style={{
-                          ...styles.switchBtn,
-                          background: lead.stage === s.id ? s.color : s.soft,
-                          color: lead.stage === s.id ? "#fff" : s.color,
-                        }}>{s.label}</button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
+            const topBlock = (
+              <div style={styles.drawerTop}>
+                <div style={{ ...styles.avatarLg, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
+                <h2 style={styles.drawerName}>{lead.name}</h2>
+                {lead.referrer && <div style={styles.drawerRef}>הופנה ע"י {lead.referrer}</div>}
+              </div>
             );
-            const secondary = (
-              <>
-                <SummaryNotes lead={lead} onSave={onSave} />
-                <MeetingAISummary lead={lead} onSave={onSave} />
-                {isInterested && (
-                  <div style={styles.journeyPromo} className="journey-promo">
-                    <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
-                    <JourneyBar current={Number(lead.journey_stage) || 0} done={Number(lead.journey_done) || 0} />
-                  </div>
+            const contactBlock = (
+              <div style={styles.contactRow}>
+                {lead.phone && <a href={`tel:${lead.phone}`} style={styles.contactBtn}><Phone size={16} />{lead.phone}</a>}
+                {lead.email && (
+                  isMobile
+                    ? <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
+                    : <a href={`https://mail.google.com/mail/u/arie@kappainv.com/?view=cm&fs=1&to=${encodeURIComponent(lead.email)}`} target="_blank" rel="noopener noreferrer" style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
                 )}
-                {maximized && (
-                  <div style={styles.stageSwitch}>
-                    <div style={styles.switchLabel}>שינוי שלב</div>
-                    <div style={styles.switchBtns}>
-                      {STAGES.map((s) => (
-                        <button key={s.id} onClick={() => onMove(s.id)} style={{
-                          ...styles.switchBtn,
-                          background: lead.stage === s.id ? s.color : s.soft,
-                          color: lead.stage === s.id ? "#fff" : s.color,
-                        }}>{s.label}</button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
+              </div>
+            );
+            const detailBlock = (
+              <div style={styles.detailGrid}>
+                <Detail label="קמפיין" value={lead.campaign || "—"} />
+                <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
+                <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
+                <Detail label="קשר אחרון" value={lead.last_contact || "—"} />
+                <Detail label="שיחה הבאה" value={lead.next_call || "—"} highlight={isDue(lead.next_call)} />
+              </div>
+            );
+            const reasonBlock = isLost && (
+              <div style={styles.reasonBox}>
+                <div style={styles.summaryLabel}>סיבה</div>
+                <div style={styles.reasonBtns}>
+                  {LOST_REASONS.map((r) => (
+                    <button key={r} onClick={() => saveReason(r)} style={{
+                      ...styles.reasonBtn,
+                      background: lead.lost_reason === r ? ARCHIVE_COLOR : "#F1F5F9",
+                      color: lead.lost_reason === r ? "#fff" : KAPPA.graphite,
+                    }}>{r}</button>
+                  ))}
+                </div>
+              </div>
+            );
+            const notesBlock = <SummaryNotes lead={lead} onSave={onSave} />;
+            const meetingBlock = <MeetingAISummary lead={lead} onSave={onSave} />;
+            const journeyBlock = isInterested && (
+              <div style={styles.journeyPromo} className="journey-promo">
+                <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
+                <JourneyBar current={Number(lead.journey_stage) || 0} done={Number(lead.journey_done) || 0} />
+              </div>
+            );
+            const stageSwitchBlock = (
+              <div style={styles.stageSwitch}>
+                <div style={styles.switchLabel}>שינוי שלב</div>
+                <div style={styles.switchBtns}>
+                  {STAGES.map((s) => (
+                    <button key={s.id} onClick={() => onMove(s.id)} style={{
+                      ...styles.switchBtn,
+                      background: lead.stage === s.id ? s.color : s.soft,
+                      color: lead.stage === s.id ? "#fff" : s.color,
+                    }}>{s.label}</button>
+                  ))}
+                </div>
+              </div>
             );
             return maximized ? (
               <div className="drawer-grid-2col">
-                <div>{primary}</div>
-                <div>{secondary}</div>
+                <div>
+                  {topBlock}{contactBlock}{detailBlock}
+                  <InvestmentsView lead={lead} />
+                  {reasonBlock}
+                  {notesBlock}
+                </div>
+                <div>
+                  {meetingBlock}
+                  {journeyBlock}
+                  {stageSwitchBlock}
+                </div>
               </div>
             ) : (
-              <>{primary}{secondary}</>
+              <>
+                {topBlock}{contactBlock}{detailBlock}
+                <InvestmentsView lead={lead} />
+                {reasonBlock}
+                {notesBlock}
+                {meetingBlock}
+                {journeyBlock}
+                {stageSwitchBlock}
+              </>
             );
           })()}
         </div>
@@ -1541,7 +1541,7 @@ function SummaryNotes({ lead, onSave }) {
   };
   return (
     <div style={styles.summaryBox}>
-      <div style={styles.summaryLabel}>סיכום שיחה והערות</div>
+      <div style={styles.summaryLabel}>הערות</div>
       {lead.summary && <p style={styles.summaryText}>{lead.summary}</p>}
       <div style={styles.summaryAddRow}>
         <textarea
