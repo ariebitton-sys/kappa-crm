@@ -3,7 +3,8 @@ import {
   LayoutDashboard, Users, Plus, X, Phone, Mail, Search,
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
-  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut
+  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut,
+  Maximize2, Minimize2
 } from "lucide-react";
 
 // ============ API ============
@@ -1291,9 +1292,17 @@ function InvestmentsView({ lead }) {
 function LeadDrawer({ lead, onClose, onMove, onSave }) {
   const isMobile = useIsMobile();
   const [editing, setEditing] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const [f, setF] = useState(lead);
   const [invRows, setInvRows] = useState(() => parseInvestments(lead));
   const [saving, setSaving] = useState(false);
+  const drawerStyle = { ...styles.drawer, ...(maximized ? styles.drawerMax : {}) };
+  const drawerClass = `lead-drawer${maximized ? " lead-drawer-max" : ""}`;
+  const MaximizeBtn = () => (!isMobile ? (
+    <button style={styles.iconBtn} onClick={() => setMaximized((m) => !m)} title={maximized ? "כיווץ לתצוגה רגילה" : "הגדלה למסך מלא"}>
+      {maximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+    </button>
+  ) : null);
   const st = stageOf(lead.stage);
   const isInterested = lead.stage === "interested";
   const isLost = lead.stage === "lost";
@@ -1325,32 +1334,66 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
   if (editing) {
     return (
       <div style={styles.overlay} onClick={cancel}>
-        <div style={styles.drawer} className="lead-drawer" onClick={(e) => e.stopPropagation()}>
+        <div style={drawerStyle} className={drawerClass} onClick={(e) => e.stopPropagation()}>
           <div style={styles.drawerHead}>
-            <button style={styles.iconBtn} onClick={cancel}><X size={20} /></button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button style={styles.iconBtn} onClick={cancel}><X size={20} /></button>
+              <MaximizeBtn />
+            </div>
             <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>עריכת ליד</h3>
           </div>
-          <div style={styles.drawerBody} className="drawer-body">
-            <Field label="שם מלא"><input style={styles.input} value={f.name || ""} onChange={(e) => set("name", e.target.value)} /></Field>
-            <div style={styles.fieldRow}>
-              <Field label="טלפון"><input style={styles.input} value={f.phone || ""} onChange={(e) => set("phone", e.target.value)} dir="ltr" /></Field>
-              <Field label="אימייל"><input style={styles.input} value={f.email || ""} onChange={(e) => set("email", e.target.value)} dir="ltr" /></Field>
-            </div>
-            <div style={styles.fieldRow}>
-              <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
-              <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
-            </div>
-            <InvestmentsEditor rows={invRows} onChange={setInvRows} />
-            <div style={styles.fieldRow}>
-              <DateField label="מועד פגישה" value={f.meeting_date || ""} onChange={(v) => set("meeting_date", v)} />
-              <DateField label="קשר אחרון" value={f.last_contact || ""} onChange={(v) => set("last_contact", v)} />
-            </div>
-            <DateField label="מועד שיחה הבאה" value={f.next_call || ""} onChange={(v) => set("next_call", v)} />
-            <Field label="סיכום שיחה והערות"><textarea style={{ ...styles.input, minHeight: 100, resize: "vertical" }} value={f.summary || ""} onChange={(e) => set("summary", e.target.value)} /></Field>
-            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={save}>{saving ? "שומר…" : "שמור שינויים"}</button>
-              <button style={styles.cancelBtn} onClick={cancel}>ביטול</button>
-            </div>
+          <div style={{ ...styles.drawerBody, ...(maximized ? { padding: "28px 48px" } : {}) }} className="drawer-body">
+            {maximized ? (
+              <div className="drawer-grid-2col">
+                <div>
+                  <Field label="שם מלא"><input style={styles.input} value={f.name || ""} onChange={(e) => set("name", e.target.value)} /></Field>
+                  <div style={styles.fieldRow}>
+                    <Field label="טלפון"><input style={styles.input} value={f.phone || ""} onChange={(e) => set("phone", e.target.value)} dir="ltr" /></Field>
+                    <Field label="אימייל"><input style={styles.input} value={f.email || ""} onChange={(e) => set("email", e.target.value)} dir="ltr" /></Field>
+                  </div>
+                  <div style={styles.fieldRow}>
+                    <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
+                    <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
+                  </div>
+                  <InvestmentsEditor rows={invRows} onChange={setInvRows} />
+                </div>
+                <div>
+                  <div style={styles.fieldRow}>
+                    <DateField label="מועד פגישה" value={f.meeting_date || ""} onChange={(v) => set("meeting_date", v)} />
+                    <DateField label="קשר אחרון" value={f.last_contact || ""} onChange={(v) => set("last_contact", v)} />
+                  </div>
+                  <DateField label="מועד שיחה הבאה" value={f.next_call || ""} onChange={(v) => set("next_call", v)} />
+                  <Field label="סיכום שיחה והערות"><textarea style={{ ...styles.input, minHeight: 160, resize: "vertical" }} value={f.summary || ""} onChange={(e) => set("summary", e.target.value)} /></Field>
+                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                    <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={save}>{saving ? "שומר…" : "שמור שינויים"}</button>
+                    <button style={styles.cancelBtn} onClick={cancel}>ביטול</button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <Field label="שם מלא"><input style={styles.input} value={f.name || ""} onChange={(e) => set("name", e.target.value)} /></Field>
+                <div style={styles.fieldRow}>
+                  <Field label="טלפון"><input style={styles.input} value={f.phone || ""} onChange={(e) => set("phone", e.target.value)} dir="ltr" /></Field>
+                  <Field label="אימייל"><input style={styles.input} value={f.email || ""} onChange={(e) => set("email", e.target.value)} dir="ltr" /></Field>
+                </div>
+                <div style={styles.fieldRow}>
+                  <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
+                  <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
+                </div>
+                <InvestmentsEditor rows={invRows} onChange={setInvRows} />
+                <div style={styles.fieldRow}>
+                  <DateField label="מועד פגישה" value={f.meeting_date || ""} onChange={(v) => set("meeting_date", v)} />
+                  <DateField label="קשר אחרון" value={f.last_contact || ""} onChange={(v) => set("last_contact", v)} />
+                </div>
+                <DateField label="מועד שיחה הבאה" value={f.next_call || ""} onChange={(v) => set("next_call", v)} />
+                <Field label="סיכום שיחה והערות"><textarea style={{ ...styles.input, minHeight: 100, resize: "vertical" }} value={f.summary || ""} onChange={(e) => set("summary", e.target.value)} /></Field>
+                <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                  <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={save}>{saving ? "שומר…" : "שמור שינויים"}</button>
+                  <button style={styles.cancelBtn} onClick={cancel}>ביטול</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -1360,70 +1403,107 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
   // ---------- VIEW MODE ----------
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.drawer} className="lead-drawer" onClick={(e) => e.stopPropagation()}>
+      <div style={drawerStyle} className={drawerClass} onClick={(e) => e.stopPropagation()}>
         <div style={styles.drawerHead}>
-          <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
+            <MaximizeBtn />
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button style={styles.editBtn} onClick={startEdit}><Pencil size={15} /> עריכה</button>
             <div style={{ ...styles.chip, background: st.soft, color: st.color }}>{st.label}</div>
           </div>
         </div>
-        <div style={styles.drawerBody} className="drawer-body">
-          <div style={styles.drawerTop}>
-            <div style={{ ...styles.avatarLg, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
-            <h2 style={styles.drawerName}>{lead.name}</h2>
-            {lead.referrer && <div style={styles.drawerRef}>הופנה ע"י {lead.referrer}</div>}
-          </div>
-          <div style={styles.contactRow}>
-            {lead.phone && <a href={`tel:${lead.phone}`} style={styles.contactBtn}><Phone size={16} />{lead.phone}</a>}
-            {lead.email && (
-              isMobile
-                ? <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
-                : <a href={`https://mail.google.com/mail/u/arie@kappainv.com/?view=cm&fs=1&to=${encodeURIComponent(lead.email)}`} target="_blank" rel="noopener noreferrer" style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
-            )}
-          </div>
-          <div style={styles.detailGrid}>
-            <Detail label="קמפיין" value={lead.campaign || "—"} />
-            <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
-            <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
-            <Detail label="קשר אחרון" value={lead.last_contact || "—"} />
-            <Detail label="שיחה הבאה" value={lead.next_call || "—"} highlight={isDue(lead.next_call)} />
-          </div>
-          <InvestmentsView lead={lead} />
-          {isLost && (
-            <div style={styles.reasonBox}>
-              <div style={styles.summaryLabel}>סיבה</div>
-              <div style={styles.reasonBtns}>
-                {LOST_REASONS.map((r) => (
-                  <button key={r} onClick={() => saveReason(r)} style={{
-                    ...styles.reasonBtn,
-                    background: lead.lost_reason === r ? ARCHIVE_COLOR : "#F1F5F9",
-                    color: lead.lost_reason === r ? "#fff" : KAPPA.graphite,
-                  }}>{r}</button>
-                ))}
+        <div style={{ ...styles.drawerBody, ...(maximized ? { padding: "28px 48px" } : {}) }} className="drawer-body">
+          {(() => {
+            const primary = (
+              <>
+                <div style={styles.drawerTop}>
+                  <div style={{ ...styles.avatarLg, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
+                  <h2 style={styles.drawerName}>{lead.name}</h2>
+                  {lead.referrer && <div style={styles.drawerRef}>הופנה ע"י {lead.referrer}</div>}
+                </div>
+                <div style={styles.contactRow}>
+                  {lead.phone && <a href={`tel:${lead.phone}`} style={styles.contactBtn}><Phone size={16} />{lead.phone}</a>}
+                  {lead.email && (
+                    isMobile
+                      ? <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
+                      : <a href={`https://mail.google.com/mail/u/arie@kappainv.com/?view=cm&fs=1&to=${encodeURIComponent(lead.email)}`} target="_blank" rel="noopener noreferrer" style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
+                  )}
+                </div>
+                <div style={styles.detailGrid}>
+                  <Detail label="קמפיין" value={lead.campaign || "—"} />
+                  <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
+                  <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
+                  <Detail label="קשר אחרון" value={lead.last_contact || "—"} />
+                  <Detail label="שיחה הבאה" value={lead.next_call || "—"} highlight={isDue(lead.next_call)} />
+                </div>
+                <InvestmentsView lead={lead} />
+                {isLost && (
+                  <div style={styles.reasonBox}>
+                    <div style={styles.summaryLabel}>סיבה</div>
+                    <div style={styles.reasonBtns}>
+                      {LOST_REASONS.map((r) => (
+                        <button key={r} onClick={() => saveReason(r)} style={{
+                          ...styles.reasonBtn,
+                          background: lead.lost_reason === r ? ARCHIVE_COLOR : "#F1F5F9",
+                          color: lead.lost_reason === r ? "#fff" : KAPPA.graphite,
+                        }}>{r}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!maximized && (
+                  <div style={styles.stageSwitch}>
+                    <div style={styles.switchLabel}>שינוי שלב</div>
+                    <div style={styles.switchBtns}>
+                      {STAGES.map((s) => (
+                        <button key={s.id} onClick={() => onMove(s.id)} style={{
+                          ...styles.switchBtn,
+                          background: lead.stage === s.id ? s.color : s.soft,
+                          color: lead.stage === s.id ? "#fff" : s.color,
+                        }}>{s.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+            const secondary = (
+              <>
+                <SummaryNotes lead={lead} onSave={onSave} />
+                <MeetingAISummary lead={lead} onSave={onSave} />
+                {isInterested && (
+                  <div style={styles.journeyPromo} className="journey-promo">
+                    <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
+                    <JourneyBar current={Number(lead.journey_stage) || 0} done={Number(lead.journey_done) || 0} />
+                  </div>
+                )}
+                {maximized && (
+                  <div style={styles.stageSwitch}>
+                    <div style={styles.switchLabel}>שינוי שלב</div>
+                    <div style={styles.switchBtns}>
+                      {STAGES.map((s) => (
+                        <button key={s.id} onClick={() => onMove(s.id)} style={{
+                          ...styles.switchBtn,
+                          background: lead.stage === s.id ? s.color : s.soft,
+                          color: lead.stage === s.id ? "#fff" : s.color,
+                        }}>{s.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+            return maximized ? (
+              <div className="drawer-grid-2col">
+                <div>{primary}</div>
+                <div>{secondary}</div>
               </div>
-            </div>
-          )}
-          <SummaryNotes lead={lead} onSave={onSave} />
-          <MeetingAISummary lead={lead} onSave={onSave} />
-          {isInterested && (
-            <div style={styles.journeyPromo} className="journey-promo">
-              <div style={styles.promoHead}><Sparkles size={16} color={KAPPA.teal} /> נמצא במסלול ליווי משקיעים</div>
-              <JourneyBar current={Number(lead.journey_stage) || 0} done={Number(lead.journey_done) || 0} />
-            </div>
-          )}
-          <div style={styles.stageSwitch}>
-            <div style={styles.switchLabel}>שינוי שלב</div>
-            <div style={styles.switchBtns}>
-              {STAGES.map((s) => (
-                <button key={s.id} onClick={() => onMove(s.id)} style={{
-                  ...styles.switchBtn,
-                  background: lead.stage === s.id ? s.color : s.soft,
-                  color: lead.stage === s.id ? "#fff" : s.color,
-                }}>{s.label}</button>
-              ))}
-            </div>
-          </div>
+            ) : (
+              <>{primary}{secondary}</>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -1739,6 +1819,9 @@ const css = `
   .spin { animation: spin 1s linear infinite; }
   @keyframes slideIn { from { transform: translateX(-30px); opacity:0 } to { transform:translateX(0); opacity:1 } }
   @keyframes toastIn { from { transform: translateY(20px); opacity:0 } to { transform:translateY(0); opacity:1 } }
+  .drawer-grid-2col { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 0 40px; }
+  .drawer-grid-2col > div { min-width: 0; }
+  @media (max-width: 900px) { .drawer-grid-2col { grid-template-columns: 1fr; } }
   @media (max-width: 768px) {
     .kpi-row { grid-template-columns: repeat(2, 1fr) !important; gap: 12px !important; }
     .dash-grid { grid-template-columns: 1fr !important; }
@@ -1915,6 +1998,7 @@ const styles = {
   confirmSecondary: { width: "100%", padding: "13px", borderRadius: 11, background: "#fff", color: KAPPA.tealDark, border: `1.5px solid ${KAPPA.teal}`, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   confirmCancel: { marginTop: 14, background: "none", border: "none", color: "#94A3B8", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: FONT },
   drawer: { width: 520, maxWidth: "92vw", height: "100%", background: "#fff", display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(0,0,0,0.15)", animation: "slideIn .22s ease" },
+  drawerMax: { width: "100vw", maxWidth: "100vw" },
   drawerHead: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid #F1F5F9", flexShrink: 0 },
   iconBtn: { width: 36, height: 36, borderRadius: 9, border: "none", background: "#F4F6F9", display: "grid", placeItems: "center", cursor: "pointer", color: KAPPA.graphite },
   drawerBody: { flex: 1, overflowY: "auto", overflowX: "hidden", padding: "22px", minWidth: 0 },
