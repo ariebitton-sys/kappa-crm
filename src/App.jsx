@@ -1466,13 +1466,14 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
             );
             const stageSwitchBlock = (
               <div style={styles.stageSwitch}>
-                <div style={styles.switchLabel}>שינוי שלב</div>
+                <div style={styles.switchLabel}>סטטוס</div>
                 <div style={styles.switchBtns}>
                   {STAGES.map((s) => (
                     <button key={s.id} onClick={() => onMove(s.id)} style={{
                       ...styles.switchBtn,
                       background: lead.stage === s.id ? s.color : s.soft,
                       color: lead.stage === s.id ? "#fff" : s.color,
+                      borderColor: lead.stage === s.id ? KAPPA.tealDark : "transparent",
                     }}>{s.label}</button>
                   ))}
                 </div>
@@ -2026,7 +2027,7 @@ const styles = {
   stageSwitch: { marginTop: 4 },
   switchLabel: { fontSize: 13, fontWeight: 600, color: KAPPA.graphite, marginBottom: 10 },
   switchBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
-  switchBtn: { border: "none", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
+  switchBtn: { border: "2px solid transparent", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
   centerState: { display: "flex", flexDirection: "column", alignItems: "center", gap: 14, padding: "70px 20px", textAlign: "center" },
   stateText: { fontSize: 14.5, color: "#94A3B8", maxWidth: 340, lineHeight: 1.6 },
   retryBtn: { border: "none", borderRadius: 9, padding: "10px 20px", background: KAPPA.teal, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
