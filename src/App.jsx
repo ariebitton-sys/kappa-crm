@@ -4,7 +4,7 @@ import {
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
   Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut,
-  Maximize2, Minimize2, Trash2
+  Maximize2, Minimize2, Trash2, Archive, RotateCcw
 } from "lucide-react";
 
 // ============ API ============
@@ -16,6 +16,8 @@ const API = {
   update: `${API_BASE}/crm/lead/update`,
   stage:  `${API_BASE}/crm/lead/stage`,
   delete: `${API_BASE}/crm/lead/delete`,
+  deleted: `${API_BASE}/crm/leads/deleted`,
+  restore: `${API_BASE}/crm/lead/restore`,
   summarize: `${API_BASE}/crm/lead/summarize`,
 };
 
@@ -259,6 +261,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [journeyPrompt, setJourneyPrompt] = useState(null); // { id, resumeStage } pending move into "interested"
   const [confirmDelete, setConfirmDelete] = useState(null); // lead pending permanent deletion
+  const [binOpen, setBinOpen] = useState(false); // recycle bin of deleted leads
 
   // ---- Auth (Google Sign-In, restricted to @kappainv.com) ----
   const [session, setSession] = useState(() => {
@@ -500,6 +503,27 @@ export default function App() {
     }
   };
 
+  // restore lead → POST /crm/lead/restore
+  // Writes the archived lead back into the Leads sheet and stamps the archive
+  // row as restored, so the deletion stays on record but drops out of the bin.
+  const restoreLead = async (row) => {
+    try {
+      const res = await fetch(API.restore, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: row.id, restored_by: session.email || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      await loadLeads(true);
+      flash("הליד שוחזר וחזר למערכת");
+      return true;
+    } catch {
+      flash("השחזור נכשל — הליד נשאר בסל המחיקות", "err");
+      return false;
+    }
+  };
+
   if (!session) {
     return <LoginScreen onCredential={handleGoogleCredential} error={authError} checking={authChecking} />;
   }
@@ -532,6 +556,9 @@ export default function App() {
           </div>
           <button style={styles.refreshBtn} onClick={loadLeads} title="רענן">
             <RefreshCw size={16} className={status === "loading" ? "spin" : ""} />
+          </button>
+          <button style={styles.refreshBtn} onClick={() => setBinOpen(true)} title="סל המחיקות" aria-label="סל המחיקות">
+            <Archive size={16} />
           </button>
           {stats.dueCalls > 0 && (
             <div style={{ ...styles.dueBadge, ...(isMobile ? styles.dueBadgeMobile : {}) }}><CalendarClock size={16} />{isMobile ? ` ${stats.dueCalls}` : ` ${stats.dueCalls} שיחות להיום`}</div>
@@ -606,6 +633,9 @@ export default function App() {
       {confirmDelete && (
         <DeleteConfirm lead={confirmDelete} onCancel={() => setConfirmDelete(null)} onConfirm={deleteLead} />
       )}
+      {binOpen && (
+        <DeletedBin onClose={() => setBinOpen(false)} onRestore={restoreLead} />
+      )}
       {toast && (
         <div style={{ ...styles.toast, background: toast.kind === "err" ? "#EF4444" : KAPPA.ink }}>
           {toast.kind === "err" ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />} {toast.msg}
@@ -653,6 +683,82 @@ function DeleteConfirm({ lead, onCancel, onConfirm }) {
           </button>
         </div>
         <button style={styles.confirmCancel} onClick={onCancel}>ביטול</button>
+      </div>
+    </div>
+  );
+}
+
+// Recycle bin: everything sitting in the "Deleted" tab that has not been
+// restored yet. Loaded on open rather than kept in app state, since it is a
+// rarely-used recovery screen and should always show the sheet's current truth.
+function DeletedBin({ onClose, onRestore }) {
+  const [rows, setRows] = useState([]);
+  const [state, setState] = useState("loading"); // loading | ready | error
+  const [busyId, setBusyId] = useState(null);
+
+  const load = useCallback(async () => {
+    setState("loading");
+    try {
+      const res = await fetch(API.deleted);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setRows((data.deleted || []).map((r) => ({ ...r, id: String(r.id) })));
+      setState("ready");
+    } catch {
+      setState("error");
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const restore = async (row) => {
+    setBusyId(row.id);
+    const ok = await onRestore(row);
+    setBusyId(null);
+    if (ok) setRows((rs) => rs.filter((r) => r.id !== row.id));
+  };
+
+  return (
+    <div style={styles.confirmOverlay} onClick={onClose}>
+      <div style={styles.binBox} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.binHead}>
+          <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>סל המחיקות</h3>
+        </div>
+        <div style={styles.binBody}>
+          {state === "loading" && (
+            <div style={styles.centerState}><RefreshCw size={26} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען…</p></div>
+          )}
+          {state === "error" && (
+            <div style={styles.centerState}>
+              <AlertCircle size={32} color="#EF4444" />
+              <p style={styles.stateText}>לא הצלחנו לטעון את סל המחיקות.</p>
+              <button style={styles.retryBtn} onClick={load}>נסה שוב</button>
+            </div>
+          )}
+          {state === "ready" && rows.length === 0 && (
+            <div style={styles.centerState}>
+              <Archive size={32} color="#94A3B8" />
+              <p style={styles.stateText}>אין לידים מחוקים.</p>
+            </div>
+          )}
+          {state === "ready" && rows.map((r) => (
+            <div key={r.id} style={styles.binRow}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={styles.binName}>{r.name || "ללא שם"}</div>
+                <div style={styles.binMeta}>
+                  נמחק {r.deleted_at || "—"}{r.deleted_by ? ` · ${r.deleted_by}` : ""}
+                </div>
+                {r.delete_reason && <div style={styles.binReason}>סיבה: {r.delete_reason}</div>}
+              </div>
+              <button
+                style={{ ...styles.restoreBtn, opacity: busyId === r.id ? 0.5 : 1 }}
+                disabled={busyId === r.id}
+                onClick={() => restore(r)}>
+                <RotateCcw size={14} /> {busyId === r.id ? "משחזר…" : "שחזר"}
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -2115,6 +2221,14 @@ const styles = {
   promoHead: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: KAPPA.tealDark, marginBottom: 18 },
   stageSwitch: { marginTop: 4 },
   dangerZone: { marginTop: 22, paddingTop: 16, borderTop: "1px solid #F1F5F9", display: "flex", justifyContent: "flex-start" },
+  binBox: { width: 560, maxWidth: "94vw", maxHeight: "82vh", background: "#fff", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.18)" },
+  binHead: { display: "flex", alignItems: "center", justifyContent: "space-between", flexDirection: "row-reverse", padding: "14px 18px", borderBottom: "1px solid #F1F5F9" },
+  binBody: { padding: "10px 18px 18px", overflowY: "auto" },
+  binRow: { display: "flex", alignItems: "center", gap: 12, padding: "12px 2px", borderBottom: "1px solid #F8FAFC" },
+  binName: { fontSize: 14.5, fontWeight: 700, color: KAPPA.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  binMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
+  binReason: { fontSize: 12.5, color: "#64748B", marginTop: 2 },
+  restoreBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   deleteBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: "#FEF2F2", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 9, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   switchLabel: { fontSize: 13, fontWeight: 600, color: KAPPA.graphite, marginBottom: 10 },
   switchBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
