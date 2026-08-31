@@ -4,7 +4,7 @@ import {
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
   Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut,
-  Maximize2, Minimize2
+  Maximize2, Minimize2, Trash2
 } from "lucide-react";
 
 // ============ API ============
@@ -15,6 +15,7 @@ const API = {
   add:    `${API_BASE}/crm/lead/add`,
   update: `${API_BASE}/crm/lead/update`,
   stage:  `${API_BASE}/crm/lead/stage`,
+  delete: `${API_BASE}/crm/lead/delete`,
   summarize: `${API_BASE}/crm/lead/summarize`,
 };
 
@@ -257,6 +258,7 @@ export default function App() {
   const [dragId, setDragId] = useState(null);
   const [toast, setToast] = useState(null);
   const [journeyPrompt, setJourneyPrompt] = useState(null); // { id, resumeStage } pending move into "interested"
+  const [confirmDelete, setConfirmDelete] = useState(null); // lead pending permanent deletion
 
   // ---- Auth (Google Sign-In, restricted to @kappainv.com) ----
   const [session, setSession] = useState(() => {
@@ -476,6 +478,28 @@ export default function App() {
     }
   };
 
+  // delete lead → POST /crm/lead/delete
+  // The lead is archived to the "Deleted" tab in the back office before the row
+  // is removed from Leads, so a deletion is always recoverable from the sheet.
+  const deleteLead = async (lead, reason) => {
+    const prev = leads;
+    setLeads((ls) => ls.filter((l) => l.id !== lead.id));
+    setSelected(null);
+    setConfirmDelete(null);
+    try {
+      const res = await fetch(API.delete, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: lead.id, reason: reason || "", deleted_by: session.email || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      flash("הליד נמחק ותועד ביומן המחיקות");
+    } catch {
+      setLeads(prev); flash("המחיקה נכשלה — הליד שוחזר", "err");
+    }
+  };
+
   if (!session) {
     return <LoginScreen onCredential={handleGoogleCredential} error={authError} checking={authChecking} />;
   }
@@ -549,7 +573,8 @@ export default function App() {
 
       {selected && (
         <LeadDrawer lead={selected} onClose={() => setSelected(null)}
-          onMove={(s) => moveLead(selected.id, s)} onSave={updateLead} />
+          onMove={(s) => moveLead(selected.id, s)} onSave={updateLead}
+          onRequestDelete={() => setConfirmDelete(selected)} />
       )}
       {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} />}
 
@@ -578,6 +603,9 @@ export default function App() {
           </div>
         </div>
       )}
+      {confirmDelete && (
+        <DeleteConfirm lead={confirmDelete} onCancel={() => setConfirmDelete(null)} onConfirm={deleteLead} />
+      )}
       {toast && (
         <div style={{ ...styles.toast, background: toast.kind === "err" ? "#EF4444" : KAPPA.ink }}>
           {toast.kind === "err" ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />} {toast.msg}
@@ -588,6 +616,48 @@ export default function App() {
 }
 
 // ============ States ============
+// Deleting a lead is irreversible from inside the CRM (the record survives only
+// in the "Deleted" tab of the sheet), so the confirmation asks for the word
+// "מחק" to be typed out rather than relying on a single click.
+function DeleteConfirm({ lead, onCancel, onConfirm }) {
+  const [typed, setTyped] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const armed = typed.trim() === "מחק";
+  const go = async () => {
+    if (!armed || busy) return;
+    setBusy(true);
+    await onConfirm(lead, reason.trim());
+  };
+  return (
+    <div style={styles.confirmOverlay} onClick={onCancel}>
+      <div style={styles.confirmBox} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...styles.confirmIcon, background: "#FEE2E2" }}><Trash2 size={26} color="#EF4444" /></div>
+        <h3 style={styles.confirmTitle}>מחיקת הליד {lead.name}</h3>
+        <p style={styles.confirmText}>
+          הליד יוסר מהמערכת. הוא יתועד ביומן המחיקות בגיליון (לשונית "Deleted") עם כל הפרטים,
+          התאריך ומי מחק, כך שתמיד אפשר לאתר אותו בדיעבד.
+        </p>
+        <div style={{ width: "100%", textAlign: "right" }}>
+          <div style={styles.summaryLabel}>סיבת המחיקה (רשות)</div>
+          <input style={styles.input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="למשל: כפילות, נוצר בטעות…" />
+          <div style={{ ...styles.summaryLabel, marginTop: 12 }}>לאישור, הקלד מחק</div>
+          <input style={styles.input} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="מחק" />
+        </div>
+        <div style={{ ...styles.confirmBtns, marginTop: 14 }}>
+          <button
+            style={{ ...styles.confirmPrimary, background: armed ? "#EF4444" : "#FCA5A5", cursor: armed ? "pointer" : "not-allowed", opacity: busy ? 0.6 : 1 }}
+            disabled={!armed || busy}
+            onClick={go}>
+            {busy ? "מוחק…" : "מחק לצמיתות"}
+          </button>
+        </div>
+        <button style={styles.confirmCancel} onClick={onCancel}>ביטול</button>
+      </div>
+    </div>
+  );
+}
+
 function Loading() {
   return (
     <div style={styles.centerState}>
@@ -1299,7 +1369,7 @@ function InvestmentsView({ lead }) {
 }
 
 // ============ Drawer ============
-function LeadDrawer({ lead, onClose, onMove, onSave }) {
+function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
   const isMobile = useIsMobile();
   const [editing, setEditing] = useState(false);
   const [maximized, setMaximized] = useState(false);
@@ -1489,6 +1559,13 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
                 </div>
               </div>
             );
+            const deleteBlock = (
+              <div style={styles.dangerZone}>
+                <button style={styles.deleteBtn} onClick={onRequestDelete}>
+                  <Trash2 size={15} /> מחק ליד
+                </button>
+              </div>
+            );
             return maximized ? (
               <div className="drawer-grid-2col">
                 <div>
@@ -1501,6 +1578,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
                   {meetingBlock}
                   {journeyBlock}
                   {stageSwitchBlock}
+                  {deleteBlock}
                 </div>
               </div>
             ) : (
@@ -1512,6 +1590,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave }) {
                 {meetingBlock}
                 {journeyBlock}
                 {stageSwitchBlock}
+                {deleteBlock}
               </>
             );
           })()}
@@ -2035,6 +2114,8 @@ const styles = {
   journeyPromo: { background: `linear-gradient(135deg, ${KAPPA.tealSoft}, #F0FBFC)`, borderRadius: 14, padding: "18px", marginBottom: 18, border: `1px solid ${KAPPA.teal}22` },
   promoHead: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: KAPPA.tealDark, marginBottom: 18 },
   stageSwitch: { marginTop: 4 },
+  dangerZone: { marginTop: 22, paddingTop: 16, borderTop: "1px solid #F1F5F9", display: "flex", justifyContent: "flex-start" },
+  deleteBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: "#FEF2F2", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 9, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   switchLabel: { fontSize: 13, fontWeight: 600, color: KAPPA.graphite, marginBottom: 10 },
   switchBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
   switchBtn: { border: "2px solid transparent", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
