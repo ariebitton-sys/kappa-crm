@@ -952,13 +952,39 @@ function CampaignsAdmin({ leads, session, flash }) {
     return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
   });
 
+  // ---- header figures ----
+  const now = new Date();
+  const leadsThisMonth = leads.filter((l) => {
+    const d = parseDMY(l.created_at);
+    return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  }).length;
+  const activeCount = rows.filter((r) => r.active).length;
+  const topName = Object.keys(usage).sort((a, b) => usage[b] - usage[a])[0];
+  const topCampaign = topName || "—";
+  // Averaged over every lead that carries a campaign, since a lead with no
+  // campaign was never paid for through one. Currencies stay separate.
+  const attributedLeads = leads.filter((l) => String(l.campaign || "").trim() !== "").length;
+  const costTotals = sumByCurrency(costs);
+  const costCurrencies = currencyList(costTotals);
+  const avgCostPerLead = (!costCurrencies.length || !attributedLeads)
+    ? "—"
+    : costCurrencies.map((c) => money(costTotals[c] / attributedLeads, c)).join(" + ");
+
   return (
     <div>
       <h1 style={styles.pageTitle}>ניהול קמפיינים</h1>
       <p style={styles.pageSub}>הקמפיינים הפעילים כאן הם אלה שיוצעו בטופס ליד חדש</p>
 
+      <div style={styles.kpiRow} className="kpi-row">
+        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="סה״כ לידים החודש" value={leadsThisMonth} />
+        <Kpi icon={<Megaphone size={20} />} tint="#8B5CF6" label="קמפיינים פעילים" value={activeCount} />
+        <Kpi icon={<TrendingUp size={20} />} tint="#10B981" label="הקמפיין המוביל"
+          value={<span style={styles.kpiValueText}>{topCampaign}</span>} />
+        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="עלות ממוצעת לליד" value={avgCostPerLead} />
+      </div>
+
       <div style={styles.card}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>קמפיינים</h3></div>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>ניהול קמפיינים</h3></div>
 
         <div style={styles.addCampaignRow}>
           <input
@@ -984,40 +1010,66 @@ function CampaignsAdmin({ leads, session, flash }) {
             <button style={styles.retryBtn} onClick={reload}>נסה שוב</button>
           </div>
         )}
-        {state === "ready" && rows.map((r) => (
-          <div key={r.campaign_id} style={styles.campRow}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              {editingId === r.campaign_id ? (
-                <input
-                  style={{ ...styles.input, maxWidth: 280 }}
-                  value={editName}
-                  autoFocus
-                  onChange={(e) => setEditName(e.target.value)}
-                  onBlur={() => commitRename(r)}
-                  onKeyDown={(e) => { if (e.key === "Enter") commitRename(r); if (e.key === "Escape") setEditingId(null); }}
-                />
-              ) : (
-                <button className="row-btn" style={styles.campName}
-                  onClick={() => { setEditingId(r.campaign_id); setEditName(r.name); }}>
-                  {r.name}
-                </button>
-              )}
-              <div style={styles.campMeta}>
-                {usage[r.name] ? `${usage[r.name]} לידים` : "אין לידים"}
-                {!r.active && " · לא פעיל"}
-              </div>
-            </div>
-            <button
-              style={{ ...styles.campToggleBtn, opacity: busy === r.campaign_id ? 0.5 : 1,
-                background: r.active ? KAPPA.tealSoft : "#F1F5F9",
-                color: r.active ? KAPPA.tealDark : "#94A3B8",
-                borderColor: r.active ? `${KAPPA.teal}55` : "#E2E8F0" }}
-              disabled={busy === r.campaign_id}
-              onClick={() => toggleActive(r)}>
-              <Power size={14} /> {r.active ? "פעיל" : "מושבת"}
-            </button>
+        {state === "ready" && rows.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.statTable}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>שם הקמפיין</th>
+                  <th style={styles.th}>סטטוס</th>
+                  <th style={styles.th}>כמות לידים</th>
+                  <th style={styles.th}>פעולות</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.campaign_id}>
+                    <td style={styles.tdName}>
+                      {editingId === r.campaign_id ? (
+                        <input
+                          style={{ ...styles.input, maxWidth: 260 }}
+                          value={editName}
+                          autoFocus
+                          onChange={(e) => setEditName(e.target.value)}
+                          onBlur={() => commitRename(r)}
+                          onKeyDown={(e) => { if (e.key === "Enter") commitRename(r); if (e.key === "Escape") setEditingId(null); }}
+                        />
+                      ) : (
+                        <button className="row-btn" style={styles.campName}
+                          title="לחץ כדי לשנות את השם"
+                          onClick={() => { setEditingId(r.campaign_id); setEditName(r.name); }}>
+                          {r.name}
+                        </button>
+                      )}
+                    </td>
+                    <td style={styles.td}>
+                      <span style={{
+                        ...styles.statusPill,
+                        background: r.active ? "#ECFDF5" : "#FEF2F2",
+                        color: r.active ? "#047857" : "#B91C1C",
+                      }}>
+                        <span style={{ ...styles.statusDot, background: r.active ? "#10B981" : "#EF4444" }} />
+                        {r.active ? "פעיל" : "לא פעיל"}
+                      </span>
+                    </td>
+                    <td style={styles.td}>{usage[r.name] || 0}</td>
+                    <td style={styles.td}>
+                      <button
+                        style={{ ...styles.campToggleBtn, opacity: busy === r.campaign_id ? 0.5 : 1,
+                          background: r.active ? "#F1F5F9" : KAPPA.tealSoft,
+                          color: r.active ? "#64748B" : KAPPA.tealDark,
+                          borderColor: r.active ? "#E2E8F0" : `${KAPPA.teal}55` }}
+                        disabled={busy === r.campaign_id}
+                        onClick={() => toggleActive(r)}>
+                        <Power size={14} /> {busy === r.campaign_id ? "…" : (r.active ? "השבת" : "הפעל")}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ))}
+        )}
         {state === "ready" && rows.length === 0 && (
           <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין קמפיינים. הוסף אחד למעלה.</div>
         )}
@@ -1193,9 +1245,15 @@ function RangePicker({ value, onChange, customFrom, customTo, onCustom }) {
         }}>טווח מותאם</button>
       </div>
       {value === "custom" && (
+        // In RTL the first child renders rightmost, so "עד תאריך" is declared
+        // first to place it on the right and "מתאריך" on the left, as asked.
         <div style={styles.rangeCustom}>
-          <input style={styles.rangeDate} placeholder="מתאריך dd/mm/yyyy" value={customFrom} onChange={(e) => onCustom(e.target.value, customTo)} dir="ltr" />
-          <input style={styles.rangeDate} placeholder="עד תאריך dd/mm/yyyy" value={customTo} onChange={(e) => onCustom(customFrom, e.target.value)} dir="ltr" />
+          <div style={styles.rangeDateField}>
+            <DateField label="עד תאריך" value={customTo} onChange={(v) => onCustom(customFrom, v)} />
+          </div>
+          <div style={styles.rangeDateField}>
+            <DateField label="מתאריך" value={customFrom} onChange={(v) => onCustom(v, customTo)} />
+          </div>
         </div>
       )}
     </div>
@@ -2824,8 +2882,8 @@ const styles = {
   rangeWrap: { marginBottom: 18 },
   rangeBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
   rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
-  rangeCustom: { display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" },
-  rangeDate: { flex: "1 1 180px", minWidth: 170, padding: "11px 14px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 15, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
+  rangeCustom: { display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap", alignItems: "flex-end" },
+  rangeDateField: { flex: "0 1 240px", minWidth: 190 },
   statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" },
   statDivider: { height: 1, background: "#F1F5F9", margin: "12px 0" },
   convRow: { display: "flex", alignItems: "center", gap: 14, padding: "15px 4px", borderBottom: "1px solid #F8FAFC" },
@@ -2847,10 +2905,13 @@ const styles = {
   campName: { background: "none", border: "none", padding: 0, fontSize: 17, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 14, color: "#94A3B8", marginTop: 4 },
   campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
+  statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 15px", borderRadius: 20, fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" },
+  statusDot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 16, padding: "24px 26px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 50, height: 50, borderRadius: 13, display: "grid", placeItems: "center", marginBottom: 16 },
-  kpiValue: { fontSize: 32, fontWeight: 800, color: KAPPA.ink, lineHeight: 1.05 },
+  kpiValue: { fontSize: 32, fontWeight: 800, color: KAPPA.ink, lineHeight: 1.15, wordBreak: "break-word" },
+  kpiValueText: { fontSize: 21, fontWeight: 800, lineHeight: 1.3, display: "inline-block" },
   kpiLabel: { fontSize: 15, color: "#8695A8", marginTop: 8, fontWeight: 500 },
   dashGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 },
   card: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
