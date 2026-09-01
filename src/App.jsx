@@ -1202,15 +1202,16 @@ function RangePicker({ value, onChange, customFrom, customTo, onCustom }) {
   );
 }
 
-// Horizontal bar, matching the bars already used on the overview tab.
+// Horizontal bar for the statistics screens. Deliberately chunkier than the
+// overview-tab bars, which stay compact because they sit in a narrow card.
 function Bar({ label, count, max, color, suffix }) {
   return (
-    <div style={styles.barRow}>
-      <span style={styles.barLabel}>{label}</span>
-      <div style={styles.barTrack}>
-        <div style={{ ...styles.barFill, width: `${max ? (count / max) * 100 : 0}%`, background: color }} />
+    <div style={styles.barRowLg}>
+      <span style={styles.barLabelLg} title={label}>{label}</span>
+      <div style={styles.barTrackLg}>
+        <div style={{ ...styles.barFillLg, width: `${max ? (count / max) * 100 : 0}%`, background: color }} />
       </div>
-      <span style={styles.barCount}>{suffix != null ? suffix : count}</span>
+      <span style={styles.barCountLg}>{suffix != null ? suffix : count}</span>
     </div>
   );
 }
@@ -2827,14 +2828,14 @@ const styles = {
   rangeDate: { flex: "1 1 160px", minWidth: 150, padding: "9px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 13.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
   statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" },
   statDivider: { height: 1, background: "#F1F5F9", margin: "12px 0" },
-  convRow: { display: "flex", alignItems: "center", gap: 12, padding: "11px 2px", borderBottom: "1px solid #F8FAFC" },
-  convLabel: { fontSize: 14, fontWeight: 700, color: KAPPA.ink },
-  convMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 2 },
-  convRate: { fontSize: 19, fontWeight: 800, flexShrink: 0 },
+  convRow: { display: "flex", alignItems: "center", gap: 14, padding: "15px 4px", borderBottom: "1px solid #F8FAFC" },
+  convLabel: { fontSize: 16, fontWeight: 700, color: KAPPA.ink },
+  convMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 3 },
+  convRate: { fontSize: 24, fontWeight: 800, flexShrink: 0 },
   statTable: { width: "100%", borderCollapse: "collapse", fontFamily: FONT },
-  th: { textAlign: "right", fontSize: 12.5, fontWeight: 700, color: "#94A3B8", padding: "10px 10px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
-  td: { textAlign: "right", fontSize: 13.5, color: KAPPA.graphite, padding: "11px 10px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
-  tdName: { textAlign: "right", fontSize: 13.5, fontWeight: 700, color: KAPPA.ink, padding: "11px 10px", borderBottom: "1px solid #F8FAFC" },
+  th: { textAlign: "right", fontSize: 14, fontWeight: 700, color: "#94A3B8", padding: "14px 14px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
+  td: { textAlign: "right", fontSize: 16, color: KAPPA.graphite, padding: "15px 14px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
+  tdName: { textAlign: "right", fontSize: 16, fontWeight: 700, color: KAPPA.ink, padding: "15px 14px", borderBottom: "1px solid #F8FAFC" },
   addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 11, padding: "14px 16px", margin: "6px 0 16px" },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
@@ -2860,6 +2861,11 @@ const styles = {
   barTrack: { flex: 1, height: 9, background: "#F1F5F9", borderRadius: 6, overflow: "hidden" },
   barFill: { height: "100%", borderRadius: 6, transition: "width .4s" },
   barCount: { fontSize: 13, fontWeight: 700, color: KAPPA.ink, width: 22, textAlign: "left" },
+  barRowLg: { display: "flex", alignItems: "center", gap: 16, padding: "13px 22px" },
+  barLabelLg: { fontSize: 15.5, color: KAPPA.graphite, width: 150, flexShrink: 0, fontWeight: 600 },
+  barTrackLg: { flex: 1, height: 15, background: "#F1F5F9", borderRadius: 8, overflow: "hidden" },
+  barFillLg: { height: "100%", borderRadius: 8, transition: "width .4s" },
+  barCountLg: { fontSize: 16, fontWeight: 800, color: KAPPA.ink, minWidth: 34, textAlign: "left" },
   recentRow: { width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 22px", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", cursor: "pointer", fontFamily: FONT, transition: "background .12s" },
   avatar: { width: 38, height: 38, borderRadius: 10, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 13.5, flexShrink: 0 },
   recentName: { fontSize: 14, fontWeight: 600, color: KAPPA.ink },
