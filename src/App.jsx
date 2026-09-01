@@ -1016,9 +1016,9 @@ function CampaignsAdmin({ leads, session, flash }) {
               <thead>
                 <tr>
                   <th style={styles.th}>שם הקמפיין</th>
-                  <th style={styles.th}>סטטוס</th>
-                  <th style={styles.th}>כמות לידים</th>
-                  <th style={styles.th}>פעולות</th>
+                  <th style={styles.thCenter}>סטטוס</th>
+                  <th style={styles.thCenter}>כמות לידים</th>
+                  <th style={styles.thCenter}>פעולות</th>
                 </tr>
               </thead>
               <tbody>
@@ -1042,7 +1042,7 @@ function CampaignsAdmin({ leads, session, flash }) {
                         </button>
                       )}
                     </td>
-                    <td style={styles.td}>
+                    <td style={styles.tdCenter}>
                       <span style={{
                         ...styles.statusPill,
                         background: r.active ? "#ECFDF5" : "#FEF2F2",
@@ -1052,8 +1052,8 @@ function CampaignsAdmin({ leads, session, flash }) {
                         {r.active ? "פעיל" : "לא פעיל"}
                       </span>
                     </td>
-                    <td style={styles.td}>{usage[r.name] || 0}</td>
-                    <td style={styles.td}>
+                    <td style={styles.tdCenter}>{usage[r.name] || 0}</td>
+                    <td style={styles.tdCenter}>
                       <button
                         style={{ ...styles.campToggleBtn, opacity: busy === r.campaign_id ? 0.5 : 1,
                           background: r.active ? "#F1F5F9" : KAPPA.tealSoft,
@@ -1082,18 +1082,14 @@ function CampaignsAdmin({ leads, session, flash }) {
       <div style={styles.card}>
         <div style={styles.cardHead}><h3 style={styles.cardTitle}>תיעוד עלויות</h3></div>
         <div style={styles.costForm}>
-          <div style={styles.costFormRow}>
+          <div style={styles.costGrid}>
             <Field label="קמפיין">
               <select style={styles.input} value={costForm.campaign} onChange={(e) => setCostForm({ ...costForm, campaign: e.target.value })}>
                 <option value="">בחר קמפיין…</option>
                 {rows.map((r) => <option key={r.campaign_id} value={r.name}>{r.name}</option>)}
               </select>
             </Field>
-            <Field label="תאריך החיוב">
-              <input style={styles.input} placeholder="dd/mm/yyyy" value={costForm.spend_date} onChange={(e) => setCostForm({ ...costForm, spend_date: e.target.value })} dir="ltr" />
-            </Field>
-          </div>
-          <div style={styles.costFormRow}>
+            <DateField label="תאריך החיוב" value={costForm.spend_date} onChange={(v) => setCostForm({ ...costForm, spend_date: v })} />
             <Field label="סכום">
               <input style={styles.input} value={costForm.amount} onChange={(e) => setCostForm({ ...costForm, amount: e.target.value })} dir="ltr" />
             </Field>
@@ -1104,10 +1100,12 @@ function CampaignsAdmin({ leads, session, flash }) {
               </select>
             </Field>
           </div>
-          <Field label="הערה">
-            <input style={styles.input} value={costForm.note} onChange={(e) => setCostForm({ ...costForm, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
-          </Field>
-          <button style={{ ...styles.saveBtn, width: "100%", opacity: costSaving ? 0.5 : 1 }} disabled={costSaving} onClick={submitCost}>
+          <div style={styles.costNoteCell}>
+            <Field label="הערה">
+              <input style={styles.input} value={costForm.note} onChange={(e) => setCostForm({ ...costForm, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
+            </Field>
+          </div>
+          <button style={{ ...styles.costSaveBtn, opacity: costSaving ? 0.5 : 1 }} disabled={costSaving} onClick={submitCost}>
             {costSaving ? "שומר…" : "שמור עלות"}
           </button>
           <p style={styles.costHint}>
@@ -1423,9 +1421,7 @@ function CampaignsTab({ leads, costs, bounds, campaigns, onAddCost, session }) {
                   {campaigns.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </Field>
-              <Field label="תאריך החיוב">
-                <input style={styles.input} placeholder="dd/mm/yyyy" value={form.spend_date} onChange={(e) => setForm({ ...form, spend_date: e.target.value })} dir="ltr" />
-              </Field>
+              <DateField label="תאריך החיוב" value={form.spend_date} onChange={(v) => setForm({ ...form, spend_date: v })} />
             </div>
             <div style={styles.costFormRow}>
               <Field label="סכום">
@@ -2891,18 +2887,23 @@ const styles = {
   convMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 3 },
   convRate: { fontSize: 24, fontWeight: 800, flexShrink: 0 },
   statTable: { width: "100%", borderCollapse: "collapse", fontFamily: FONT },
-  th: { textAlign: "right", fontSize: 14, fontWeight: 700, color: "#94A3B8", padding: "14px 14px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
-  td: { textAlign: "right", fontSize: 16, color: KAPPA.graphite, padding: "15px 14px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
-  tdName: { textAlign: "right", fontSize: 16, fontWeight: 700, color: KAPPA.ink, padding: "15px 14px", borderBottom: "1px solid #F8FAFC" },
+  th: { textAlign: "right", fontSize: 15.5, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
+  thCenter: { textAlign: "center", fontSize: 15.5, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
+  td: { textAlign: "right", fontSize: 17, color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
+  tdCenter: { textAlign: "center", fontSize: 17, color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
+  tdName: { textAlign: "right", fontSize: 17, fontWeight: 700, color: KAPPA.ink, padding: "17px 16px", borderBottom: "1px solid #F8FAFC" },
   addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
-  costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 12, padding: "18px 20px", margin: "6px 0 18px" },
+  costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 12, padding: "20px 22px", margin: "6px 26px 18px" },
+  costGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 230px))", gap: "0 16px", justifyContent: "start" },
+  costNoteCell: { maxWidth: 476 },
+  costSaveBtn: { width: "auto", padding: "13px 34px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 14 },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
   costHint: { fontSize: 14, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
-  addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 0 14px" },
+  addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 26px 18px", maxWidth: 520 },
   addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "13px 16px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 16, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
   addCampaignBtn: { flexShrink: 0, width: "auto", padding: "13px 28px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   campRow: { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", borderBottom: "1px solid #F8FAFC" },
-  campName: { background: "none", border: "none", padding: 0, fontSize: 17, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
+  campName: { background: "none", border: "none", padding: 0, fontSize: 17.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 14, color: "#94A3B8", marginTop: 4 },
   campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 15px", borderRadius: 20, fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" },
