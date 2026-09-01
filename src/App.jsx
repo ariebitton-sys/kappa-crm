@@ -18,6 +18,8 @@ const API = {
   delete: `${API_BASE}/crm/lead/delete`,
   deleted: `${API_BASE}/crm/leads/deleted`,
   restore: `${API_BASE}/crm/lead/restore`,
+  stats: `${API_BASE}/crm/stats`,
+  costAdd: `${API_BASE}/crm/campaign-cost/add`,
   summarize: `${API_BASE}/crm/lead/summarize`,
 };
 
@@ -422,6 +424,7 @@ export default function App() {
   //                          investor's real prior approvals still count.
   const commitMove = async (id, stage, opts = {}) => {
     const prev = leads;
+    const before = leads.find((l) => l.id === id);
     const patch = { stage };
     if (opts.journeyStage != null) patch.journey_stage = opts.journeyStage;
     if (opts.journeyDone != null) patch.journey_done = opts.journeyDone;
@@ -432,7 +435,15 @@ export default function App() {
       // Only send journey_stage / journey_done / resume_stage when explicitly
       // set. Moving a lead OUT of "interested" sends none of these, so the
       // sheet keeps its existing values.
-      const body = { id, stage };
+      // from_stage / name / changed_by feed the Events log in n8n: the client
+      // already knows the previous stage, so sending it avoids an extra sheet
+      // read on the server for every card move.
+      const body = {
+        id, stage,
+        from_stage: (before && before.stage) || "",
+        name: (before && before.name) || "",
+        changed_by: session.email || "",
+      };
       if (opts.journeyStage != null) body.journey_stage = opts.journeyStage;
       if (opts.journeyDone != null) body.journey_done = opts.journeyDone;
       if (opts.resumeStage != null) body.resume_stage = opts.resumeStage;
@@ -577,7 +588,7 @@ export default function App() {
         <div style={{ ...styles.content, ...(isMobile ? styles.contentMobile : {}) }}>
           {status === "loading" && <Loading />}
           {status === "error" && <ErrorState onRetry={loadLeads} />}
-          {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} onFilterClick={goToFunnelFilter} />}
+          {status === "ready" && view === "dashboard" && <Analytics stats={stats} leads={filtered} allLeads={leads} onOpen={setSelected} onFilterClick={goToFunnelFilter} session={session} flash={flash} />}
           {status === "ready" && view === "pipeline" && (
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} />
           )}
@@ -808,6 +819,423 @@ function BottomNavItem({ icon, label, active, onClick }) {
 }
 
 // ============ Dashboard ============
+// ============ Analytics ============
+// Stage-transition events and campaign costs both live in the Leads
+// spreadsheet and are fetched together from /crm/stats.
+
+// Events carry "DD/MM/YYYY HH:MM"; parseDMY only needs the date part.
+const parseStamp = (s) => parseDMY(String(s || "").split(" ")[0]);
+
+const RANGES = [
+  { id: "30", label: "30 יום" },
+  { id: "90", label: "90 יום" },
+  { id: "year", label: "השנה" },
+  { id: "all", label: "הכל" },
+];
+// Resolve a preset into concrete bounds. `null` on either side means unbounded.
+function rangeBounds(id, customFrom, customTo) {
+  if (id === "custom") {
+    return { from: parseDMY(customFrom) || null, to: parseDMY(customTo) || null };
+  }
+  if (id === "all") return { from: null, to: null };
+  const now = new Date();
+  if (id === "year") return { from: new Date(now.getFullYear(), 0, 1), to: null };
+  const days = Number(id) || 30;
+  const from = new Date();
+  from.setHours(0, 0, 0, 0);
+  from.setDate(from.getDate() - days);
+  return { from, to: null };
+}
+const inRange = (d, b) => {
+  if (!d) return false;
+  if (b.from && d < b.from) return false;
+  if (b.to) { const end = new Date(b.to); end.setHours(23, 59, 59, 999); if (d > end) return false; }
+  return true;
+};
+const money = (n, cur) => (cur === "USD" ? "$" : "₪") + Math.round(Number(n) || 0).toLocaleString("en-US");
+
+// Cost totals are kept per currency rather than summed blindly — mixing
+// shekels and dollars into one number would produce a confident wrong answer.
+function sumByCurrency(rows) {
+  const out = {};
+  rows.forEach((r) => {
+    const cur = String(r.currency || "ILS").toUpperCase() === "USD" ? "USD" : "ILS";
+    out[cur] = (out[cur] || 0) + (Number(r.amount) || 0);
+  });
+  return out;
+}
+const currencyList = (totals) => Object.keys(totals).filter((c) => totals[c] > 0);
+
+function RangePicker({ value, onChange, customFrom, customTo, onCustom }) {
+  return (
+    <div style={styles.rangeWrap}>
+      <div style={styles.rangeBtns}>
+        {RANGES.map((r) => (
+          <button key={r.id} onClick={() => onChange(r.id)} style={{
+            ...styles.rangeBtn,
+            background: value === r.id ? KAPPA.teal : "#fff",
+            color: value === r.id ? "#fff" : KAPPA.graphite,
+            borderColor: value === r.id ? KAPPA.teal : "#E2E8F0",
+          }}>{r.label}</button>
+        ))}
+        <button onClick={() => onChange("custom")} style={{
+          ...styles.rangeBtn,
+          background: value === "custom" ? KAPPA.teal : "#fff",
+          color: value === "custom" ? "#fff" : KAPPA.graphite,
+          borderColor: value === "custom" ? KAPPA.teal : "#E2E8F0",
+        }}>טווח מותאם</button>
+      </div>
+      {value === "custom" && (
+        <div style={styles.rangeCustom}>
+          <input style={styles.rangeDate} placeholder="מתאריך dd/mm/yyyy" value={customFrom} onChange={(e) => onCustom(e.target.value, customTo)} dir="ltr" />
+          <input style={styles.rangeDate} placeholder="עד תאריך dd/mm/yyyy" value={customTo} onChange={(e) => onCustom(customFrom, e.target.value)} dir="ltr" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Horizontal bar, matching the bars already used on the overview tab.
+function Bar({ label, count, max, color, suffix }) {
+  return (
+    <div style={styles.barRow}>
+      <span style={styles.barLabel}>{label}</span>
+      <div style={styles.barTrack}>
+        <div style={{ ...styles.barFill, width: `${max ? (count / max) * 100 : 0}%`, background: color }} />
+      </div>
+      <span style={styles.barCount}>{suffix != null ? suffix : count}</span>
+    </div>
+  );
+}
+
+// Ordered path a lead is expected to travel. "future" and "lost" sit outside
+// it: they are outcomes, not steps, so counting them as funnel stages would
+// distort the conversion rates.
+const FUNNEL_PATH = ["new", "contact", "meeting", "interested", "closed"];
+
+function FunnelTab({ events, bounds, leads }) {
+  const evs = events.filter((e) => inRange(parseStamp(e.changed_at), bounds));
+  // A lead can move into the same stage more than once; count distinct leads
+  // so a card dragged back and forth doesn't inflate the numbers.
+  const entered = {};
+  FUNNEL_PATH.concat(["future", "lost"]).forEach((s) => { entered[s] = new Set(); });
+  evs.forEach((e) => {
+    const to = String(e.to_stage || "").trim();
+    if (entered[to]) entered[to].add(String(e.lead_id || ""));
+  });
+  const counts = FUNNEL_PATH.map((id) => ({ ...stageOf(id), id, count: entered[id].size }));
+  const maxCount = Math.max(1, ...counts.map((c) => c.count));
+  const lostCount = entered.lost.size;
+  const futureCount = entered.future.size;
+
+  const steps = [];
+  for (let i = 1; i < counts.length; i++) {
+    const prev = counts[i - 1].count;
+    const cur = counts[i].count;
+    steps.push({
+      from: counts[i - 1].label,
+      to: counts[i].label,
+      rate: prev > 0 ? Math.round((cur / prev) * 100) : null,
+      cur, prev,
+    });
+  }
+
+  if (evs.length === 0) {
+    return (
+      <div style={styles.card}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>משפך והמרות</h3></div>
+        <div style={{ padding: "18px 4px", color: "#64748B", fontSize: 14, lineHeight: 1.9 }}>
+          <p style={{ margin: "0 0 10px" }}>אין עדיין מעברי שלבים בטווח שנבחר.</p>
+          <p style={{ margin: 0 }}>
+            תיעוד המעברים התחיל לפעול היום, ולכן המשפך מתמלא מכאן והלאה. כל שינוי סטטוס
+            שתעשה נרשם עם השלב הקודם, השלב החדש והתאריך. בעוד כמה ימים כבר יהיה כאן מה לנתח.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.statGrid} className="dash-grid">
+      <div style={styles.card}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>לידים שנכנסו לכל שלב</h3></div>
+        <div style={{ padding: "8px 4px" }}>
+          {counts.map((c) => <Bar key={c.id} label={c.label} count={c.count} max={maxCount} color={c.color} />)}
+          <div style={styles.statDivider} />
+          <Bar label="אולי בעתיד" count={futureCount} max={maxCount} color={stageOf("future").color} />
+          <Bar label="לא מעוניין" count={lostCount} max={maxCount} color={stageOf("lost").color} />
+        </div>
+      </div>
+      <div style={styles.card}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>שיעורי המרה בין שלבים</h3></div>
+        <div style={{ padding: "6px 4px" }}>
+          {steps.map((s, i) => (
+            <div key={i} style={styles.convRow}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.convLabel}>{s.from} ← {s.to}</div>
+                <div style={styles.convMeta}>{s.cur} מתוך {s.prev}</div>
+              </div>
+              <div style={{ ...styles.convRate, color: s.rate == null ? "#94A3B8" : (s.rate >= 50 ? "#10B981" : s.rate >= 25 ? "#F59E0B" : "#EF4444") }}>
+                {s.rate == null ? "—" : s.rate + "%"}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CampaignsTab({ leads, costs, bounds, campaigns, onAddCost, session }) {
+  const [form, setForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
+  const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const periodLeads = leads.filter((l) => inRange(parseDMY(l.created_at), bounds));
+  const periodCosts = costs.filter((c) => inRange(parseDMY(c.spend_date), bounds));
+
+  const names = Array.from(new Set(
+    periodLeads.map((l) => String(l.campaign || "").trim()).filter(Boolean)
+      .concat(periodCosts.map((c) => String(c.campaign || "").trim()).filter(Boolean))
+  ));
+
+  const rows = names.map((name) => {
+    const ls = periodLeads.filter((l) => String(l.campaign || "").trim() === name);
+    const cs = periodCosts.filter((c) => String(c.campaign || "").trim() === name);
+    const totals = sumByCurrency(cs);
+    const closed = ls.filter((l) => l.stage === "closed").length;
+    const interested = ls.filter((l) => l.stage === "interested" || l.stage === "closed").length;
+    return { name, leads: ls.length, closed, interested, totals };
+  }).sort((a, b) => b.leads - a.leads);
+
+  const maxLeads = Math.max(1, ...rows.map((r) => r.leads));
+  const grandTotals = sumByCurrency(periodCosts);
+  const grandCurrencies = currencyList(grandTotals);
+
+  const submit = async () => {
+    setSaving(true);
+    const ok = await onAddCost(form);
+    setSaving(false);
+    if (ok) { setForm({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" }); setOpen(false); }
+  };
+
+  // Cost per lead is only meaningful when there are both costs and leads;
+  // showing "₪0" or a division by zero would read as a real figure.
+  const perLead = (totals, n) => {
+    const curs = currencyList(totals);
+    if (!curs.length || !n) return "—";
+    return curs.map((c) => money(totals[c] / n, c)).join(" + ");
+  };
+  const totalText = (totals) => {
+    const curs = currencyList(totals);
+    return curs.length ? curs.map((c) => money(totals[c], c)).join(" + ") : "—";
+  };
+
+  return (
+    <div>
+      <div style={styles.kpiRow} className="kpi-row">
+        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים בתקופה" value={periodLeads.length} />
+        <Kpi icon={<Target size={20} />} tint="#8B5CF6" label="קמפיינים פעילים" value={rows.length} />
+        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="עלות בתקופה" value={grandCurrencies.length ? grandCurrencies.map((c) => money(grandTotals[c], c)).join(" + ") : "—"} />
+        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="סגרו בתקופה" value={periodLeads.filter((l) => l.stage === "closed").length} />
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardHead}>
+          <h3 style={styles.cardTitle}>ביצועים לפי קמפיין</h3>
+          <button style={styles.addCostBtn} onClick={() => setOpen((v) => !v)}>
+            <Plus size={15} /> תיעוד עלות
+          </button>
+        </div>
+
+        {open && (
+          <div style={styles.costForm}>
+            <div style={styles.costFormRow}>
+              <Field label="קמפיין">
+                <select style={styles.input} value={form.campaign} onChange={(e) => setForm({ ...form, campaign: e.target.value })}>
+                  <option value="">בחר קמפיין…</option>
+                  {campaigns.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="תאריך החיוב">
+                <input style={styles.input} placeholder="dd/mm/yyyy" value={form.spend_date} onChange={(e) => setForm({ ...form, spend_date: e.target.value })} dir="ltr" />
+              </Field>
+            </div>
+            <div style={styles.costFormRow}>
+              <Field label="סכום">
+                <input style={styles.input} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} dir="ltr" />
+              </Field>
+              <Field label="מטבע">
+                <select style={styles.input} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
+                  <option value="ILS">₪ שקל</option>
+                  <option value="USD">$ דולר</option>
+                </select>
+              </Field>
+            </div>
+            <Field label="הערה">
+              <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+            </Field>
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={submit}>
+                {saving ? "שומר…" : "שמור עלות"}
+              </button>
+              <button style={styles.cancelBtn} onClick={() => setOpen(false)}>ביטול</button>
+            </div>
+            <p style={styles.costHint}>
+              כל שורה היא חיוב בודד. אפשר להזין רטרואקטיבית כמה שורות לאותו קמפיין, אחת לכל חיוב, והסינון לפי זמן יסכום רק את מה שנופל בטווח.
+            </p>
+          </div>
+        )}
+
+        {rows.length === 0 ? (
+          <div style={{ padding: "18px 4px", color: "#64748B", fontSize: 14 }}>אין לידים או עלויות בטווח שנבחר.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.statTable}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>קמפיין</th>
+                  <th style={styles.th}>לידים</th>
+                  <th style={styles.th}>מעוניינים</th>
+                  <th style={styles.th}>סגרו</th>
+                  <th style={styles.th}>עלות</th>
+                  <th style={styles.th}>עלות לליד</th>
+                  <th style={styles.th}>עלות לסגירה</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.name}>
+                    <td style={styles.tdName}>{r.name}</td>
+                    <td style={styles.td}>{r.leads}</td>
+                    <td style={styles.td}>{r.interested}</td>
+                    <td style={styles.td}>{r.closed}</td>
+                    <td style={styles.td}>{totalText(r.totals)}</td>
+                    <td style={styles.td}>{perLead(r.totals, r.leads)}</td>
+                    <td style={styles.td}>{perLead(r.totals, r.closed)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {rows.length > 0 && (
+        <div style={styles.card}>
+          <div style={styles.cardHead}><h3 style={styles.cardTitle}>לידים לפי קמפיין</h3></div>
+          <div style={{ padding: "8px 4px" }}>
+            {rows.map((r, i) => (
+              <Bar key={r.name} label={r.name} count={r.leads} max={maxLeads} color={CAMPAIGN_COLORS[i % CAMPAIGN_COLORS.length]} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+const CAMPAIGN_COLORS = ["#1FA9B8", "#8B5CF6", "#F59E0B", "#10B981", "#6366F1", "#EF4444", "#0EA5E9"];
+
+const ANALYTICS_TABS = [
+  { id: "overview", label: "סקירה כללית" },
+  { id: "funnel", label: "משפך והמרות" },
+  { id: "campaigns", label: "קמפיינים" },
+];
+
+function Analytics({ stats, leads, allLeads, onOpen, onFilterClick, session, flash }) {
+  const [tab, setTab] = useState("overview");
+  const [range, setRange] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [data, setData] = useState({ events: [], costs: [] });
+  const [state, setState] = useState("idle"); // idle | loading | ready | error
+
+  // Fetched lazily: the overview tab doesn't need it, and most sessions never
+  // leave the overview.
+  const load = useCallback(async () => {
+    setState("loading");
+    try {
+      const res = await fetch(API.stats);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      setData({ events: d.events || [], costs: d.costs || [] });
+      setState("ready");
+    } catch {
+      setState("error");
+    }
+  }, []);
+  useEffect(() => {
+    if ((tab === "funnel" || tab === "campaigns") && state === "idle") load();
+  }, [tab, state, load]);
+
+  const addCost = async (form) => {
+    try {
+      const res = await fetch(API.costAdd, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, created_by: session.email || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      flash("העלות נשמרה");
+      await load();
+      return true;
+    } catch {
+      flash("שמירת העלות נכשלה — בדוק קמפיין, תאריך וסכום", "err");
+      return false;
+    }
+  };
+
+  const bounds = rangeBounds(range, customFrom, customTo);
+  const campaigns = Array.from(new Set(
+    allLeads.map((l) => String(l.campaign || "").trim()).filter(Boolean)
+  )).sort();
+
+  return (
+    <div>
+      <h1 style={styles.pageTitle}>סטטיסטיקות</h1>
+      <div style={styles.tabBar}>
+        {ANALYTICS_TABS.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            ...styles.tabBtn,
+            color: tab === t.id ? KAPPA.tealDark : "#8695A8",
+            borderBottomColor: tab === t.id ? KAPPA.teal : "transparent",
+            fontWeight: tab === t.id ? 800 : 600,
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab === "overview" && (
+        <>
+          <p style={styles.pageSub}>תמונת מצב של משפך המשקיעים</p>
+          <Dashboard stats={stats} leads={leads} onOpen={onOpen} onFilterClick={onFilterClick} />
+        </>
+      )}
+
+      {(tab === "funnel" || tab === "campaigns") && (
+        <>
+          <RangePicker value={range} onChange={setRange} customFrom={customFrom} customTo={customTo}
+            onCustom={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
+          {state === "loading" && (
+            <div style={styles.centerState}><RefreshCw size={26} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען נתונים…</p></div>
+          )}
+          {state === "error" && (
+            <div style={styles.centerState}>
+              <AlertCircle size={32} color="#EF4444" />
+              <p style={styles.stateText}>לא הצלחנו לטעון את הנתונים.</p>
+              <button style={styles.retryBtn} onClick={load}>נסה שוב</button>
+            </div>
+          )}
+          {state === "ready" && tab === "funnel" && <FunnelTab events={data.events} bounds={bounds} leads={leads} />}
+          {state === "ready" && tab === "campaigns" && (
+            <CampaignsTab leads={allLeads} costs={data.costs} bounds={bounds} campaigns={campaigns} onAddCost={addCost} session={session} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Dashboard({ stats, leads, onOpen, onFilterClick }) {
   const recent = leads.slice(0, 6);
   const byStage = STAGES.map((s) => ({ ...s, count: leads.filter((l) => l.stage === s.id).length }));
@@ -825,8 +1253,6 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
 
   return (
     <div>
-      <h1 style={styles.pageTitle}>סקירה כללית</h1>
-      <p style={styles.pageSub}>תמונת מצב של משפך המשקיעים</p>
       <div style={styles.kpiRow} className="kpi-row">
         <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים פעילים" value={stats.total} onClick={() => onFilterClick(FUNNEL_STAGES)} />
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} onClick={() => onFilterClick(["interested"])} />
@@ -2078,6 +2504,27 @@ const styles = {
   content: { flex: 1, overflowY: "auto", padding: "28px 30px" },
   pageTitle: { fontSize: 25, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
   pageSub: { fontSize: 14, color: "#8695A8", margin: "0 0 24px" },
+  tabBar: { display: "flex", gap: 4, borderBottom: "1px solid #E8EDF2", margin: "6px 0 20px", overflowX: "auto" },
+  tabBtn: { background: "none", border: "none", borderBottom: "2.5px solid transparent", padding: "10px 16px", fontSize: 14.5, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap", marginBottom: -1 },
+  rangeWrap: { marginBottom: 18 },
+  rangeBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
+  rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "8px 15px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
+  rangeCustom: { display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" },
+  rangeDate: { flex: "1 1 160px", minWidth: 150, padding: "9px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 13.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
+  statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" },
+  statDivider: { height: 1, background: "#F1F5F9", margin: "12px 0" },
+  convRow: { display: "flex", alignItems: "center", gap: 12, padding: "11px 2px", borderBottom: "1px solid #F8FAFC" },
+  convLabel: { fontSize: 14, fontWeight: 700, color: KAPPA.ink },
+  convMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 2 },
+  convRate: { fontSize: 19, fontWeight: 800, flexShrink: 0 },
+  statTable: { width: "100%", borderCollapse: "collapse", fontFamily: FONT },
+  th: { textAlign: "right", fontSize: 12.5, fontWeight: 700, color: "#94A3B8", padding: "10px 10px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
+  td: { textAlign: "right", fontSize: 13.5, color: KAPPA.graphite, padding: "11px 10px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
+  tdName: { textAlign: "right", fontSize: 13.5, fontWeight: 700, color: KAPPA.ink, padding: "11px 10px", borderBottom: "1px solid #F8FAFC" },
+  addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 11, padding: "14px 16px", margin: "6px 0 16px" },
+  costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
+  costHint: { fontSize: 12.5, color: "#94A3B8", lineHeight: 1.7, margin: "12px 0 0" },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 15, padding: "20px 22px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 42, height: 42, borderRadius: 11, display: "grid", placeItems: "center", marginBottom: 14 },
