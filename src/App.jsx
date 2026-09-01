@@ -4,7 +4,7 @@ import {
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
   Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut,
-  Maximize2, Minimize2, Trash2, Archive, RotateCcw
+  Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power
 } from "lucide-react";
 
 // ============ API ============
@@ -20,6 +20,8 @@ const API = {
   restore: `${API_BASE}/crm/lead/restore`,
   stats: `${API_BASE}/crm/stats`,
   costAdd: `${API_BASE}/crm/campaign-cost/add`,
+  campaigns: `${API_BASE}/crm/campaigns`,
+  campaignSave: `${API_BASE}/crm/campaign/save`,
   summarize: `${API_BASE}/crm/lead/summarize`,
 };
 
@@ -162,7 +164,23 @@ const DATE_FILTER_FIELDS = [
 
 const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "העברה בנקאית", "גישה לאגורה", "פרטי תשלום ראשון"];
 
-const CAMPAIGNS = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "אתר אינטרנט - SEO", "PPC", "אחר"];
+// Fallback campaign list. Campaigns now live in the Campaigns tab of the sheet
+// and are fetched at startup; this list is only used if that fetch fails, so a
+// network problem can never leave the new-lead form without a campaign field.
+// "אחר" is not a stored campaign — it's the free-text escape hatch in the UI.
+const CAMPAIGNS_FALLBACK = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "נטוורקינג", "אתר אינטרנט - SEO", "PPC"];
+const OTHER = "אחר";
+
+// Campaigns are shared by the lead forms, the stats tabs and the management
+// screen, so they're provided via context rather than threaded through every
+// component. The hook always returns a usable shape, so a component rendered
+// outside the provider (or before the fetch lands) still works.
+const CampaignsCtx = React.createContext(null);
+function useCampaigns() {
+  const v = React.useContext(CampaignsCtx);
+  if (v) return v;
+  return { rows: [], all: CAMPAIGNS_FALLBACK, active: CAMPAIGNS_FALLBACK, reload: () => {}, save: async () => false, state: "idle" };
+}
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
 // Tracks that support compound interest (ריבית דריבית). Only these show the toggle.
 const COMPOUND_TRACKS = ["Multi Single", "Brick Capital"];
@@ -300,6 +318,49 @@ export default function App() {
   };
 
   const flash = (msg, kind = "ok") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 2600); };
+
+  // ---- Campaigns (shared with lead forms + stats + management screen) ----
+  const [campaignRows, setCampaignRows] = useState([]);
+  const [campaignState, setCampaignState] = useState("idle");
+
+  const loadCampaigns = useCallback(async () => {
+    setCampaignState("loading");
+    try {
+      const res = await fetch(API.campaigns);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      setCampaignRows(Array.isArray(d.campaigns) ? d.campaigns : []);
+      setCampaignState("ready");
+    } catch {
+      setCampaignState("error");
+    }
+  }, []);
+  useEffect(() => { if (session) loadCampaigns(); }, [session, loadCampaigns]);
+
+  const saveCampaign = async (row) => {
+    try {
+      const res = await fetch(API.campaignSave, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...row, created_by: session.email || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      await loadCampaigns();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // If the fetch failed we fall back to the built-in list rather than showing
+  // an empty campaign picker, which would look like data loss to the user.
+  const campaignsValue = useMemo(() => {
+    const usable = campaignState === "ready" && campaignRows.length > 0;
+    const all = usable ? campaignRows.map((c) => c.name) : CAMPAIGNS_FALLBACK;
+    const active = usable ? campaignRows.filter((c) => c.active).map((c) => c.name) : CAMPAIGNS_FALLBACK;
+    return { rows: campaignRows, all, active, reload: loadCampaigns, save: saveCampaign, state: campaignState };
+  }, [campaignRows, campaignState, loadCampaigns]);
 
   const loadLeads = useCallback(async (silent = false) => {
     if (silent !== true) setStatus("loading");
@@ -540,6 +601,7 @@ export default function App() {
   }
 
   return (
+    <CampaignsCtx.Provider value={campaignsValue}>
     <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
 
@@ -551,6 +613,7 @@ export default function App() {
           <nav style={styles.nav}>
             <NavItem icon={<LayoutDashboard size={19} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
+            <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
           <div style={styles.sidebarFoot}>
@@ -592,6 +655,9 @@ export default function App() {
           {status === "ready" && view === "pipeline" && (
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} />
           )}
+          {status === "ready" && view === "campaigns" && (
+            <CampaignsAdmin leads={leads} session={session} flash={flash} />
+          )}
           {status === "ready" && view === "journey" && (
             <JourneyBoard leads={leads.filter((l) => l.stage === "interested")} onOpen={setSelected} />
           )}
@@ -604,6 +670,7 @@ export default function App() {
           <nav style={styles.bottomNav}>
             <BottomNavItem icon={<LayoutDashboard size={22} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <BottomNavItem icon={<Users size={22} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
+            <BottomNavItem icon={<Megaphone size={22} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <BottomNavItem icon={<Target size={22} />} label="ליווי" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
         </>
@@ -653,6 +720,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </CampaignsCtx.Provider>
   );
 }
 
@@ -789,6 +857,245 @@ function ErrorState({ onRetry }) {
       <AlertCircle size={38} color="#EF4444" />
       <p style={styles.stateText}>לא הצלחנו לטעון את הלידים.</p>
       <button style={styles.retryBtn} onClick={onRetry}>נסה שוב</button>
+    </div>
+  );
+}
+
+// ============ Campaign management ============
+// Campaigns and their spend live side by side here: the list controls which
+// campaigns the lead forms offer, and the ledger below records what each one
+// cost. Both feed the Campaigns tab of the statistics screen.
+function CampaignsAdmin({ leads, session, flash }) {
+  const { rows, reload, save, state } = useCampaigns();
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+
+  const [costs, setCosts] = useState([]);
+  const [costState, setCostState] = useState("idle");
+  const [costForm, setCostForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
+  const [costSaving, setCostSaving] = useState(false);
+
+  const loadCosts = useCallback(async () => {
+    setCostState("loading");
+    try {
+      const res = await fetch(API.stats);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      setCosts(Array.isArray(d.costs) ? d.costs : []);
+      setCostState("ready");
+    } catch {
+      setCostState("error");
+    }
+  }, []);
+  useEffect(() => { loadCosts(); }, [loadCosts]);
+
+  // Lead counts decide whether a campaign can be removed outright: deleting one
+  // that leads still reference would leave those leads pointing at a campaign
+  // that no longer exists, so those get deactivated instead.
+  const usage = {};
+  leads.forEach((l) => {
+    const c = String(l.campaign || "").trim();
+    if (c) usage[c] = (usage[c] || 0) + 1;
+  });
+
+  const addCampaign = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (rows.some((r) => r.name === name)) { flash("קמפיין בשם הזה כבר קיים", "err"); return; }
+    setBusy("add");
+    const ok = await save({ name, active: true });
+    setBusy("");
+    if (ok) { setNewName(""); flash("הקמפיין נוסף"); }
+    else flash("הוספת הקמפיין נכשלה", "err");
+  };
+
+  const toggleActive = async (row) => {
+    setBusy(row.campaign_id);
+    const ok = await save({ campaign_id: row.campaign_id, name: row.name, active: !row.active, created_at: row.created_at });
+    setBusy("");
+    flash(ok ? (row.active ? "הקמפיין הושבת" : "הקמפיין הופעל") : "העדכון נכשל", ok ? "ok" : "err");
+  };
+
+  const commitRename = async (row) => {
+    const name = editName.trim();
+    setEditingId(null);
+    if (!name || name === row.name) return;
+    setBusy(row.campaign_id);
+    const ok = await save({ campaign_id: row.campaign_id, name, active: row.active, created_at: row.created_at });
+    setBusy("");
+    flash(ok ? "השם עודכן" : "העדכון נכשל", ok ? "ok" : "err");
+  };
+
+  const submitCost = async () => {
+    setCostSaving(true);
+    try {
+      const res = await fetch(API.costAdd, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...costForm, created_by: session.email || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      flash("העלות נשמרה");
+      setCostForm({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
+      await loadCosts();
+    } catch {
+      flash("שמירת העלות נכשלה — בדוק קמפיין, תאריך וסכום", "err");
+    }
+    setCostSaving(false);
+  };
+
+  const sortedCosts = costs.slice().sort((a, b) => {
+    const da = parseDMY(a.spend_date), db = parseDMY(b.spend_date);
+    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+  });
+
+  return (
+    <div>
+      <h1 style={styles.pageTitle}>ניהול קמפיינים</h1>
+      <p style={styles.pageSub}>הקמפיינים הפעילים כאן הם אלה שיוצעו בטופס ליד חדש</p>
+
+      <div style={styles.card}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>קמפיינים</h3></div>
+
+        <div style={styles.addCampaignRow}>
+          <input
+            style={{ ...styles.input, flex: 1 }}
+            placeholder="שם קמפיין חדש…"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addCampaign(); }}
+          />
+          <button style={{ ...styles.saveBtn, opacity: busy === "add" || !newName.trim() ? 0.5 : 1 }}
+            disabled={busy === "add" || !newName.trim()} onClick={addCampaign}>
+            {busy === "add" ? "מוסיף…" : "הוסף"}
+          </button>
+        </div>
+
+        {state === "loading" && (
+          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען קמפיינים…</p></div>
+        )}
+        {state === "error" && (
+          <div style={styles.centerState}>
+            <AlertCircle size={30} color="#EF4444" />
+            <p style={styles.stateText}>לא הצלחנו לטעון את הקמפיינים.</p>
+            <button style={styles.retryBtn} onClick={reload}>נסה שוב</button>
+          </div>
+        )}
+        {state === "ready" && rows.map((r) => (
+          <div key={r.campaign_id} style={styles.campRow}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {editingId === r.campaign_id ? (
+                <input
+                  style={{ ...styles.input, maxWidth: 280 }}
+                  value={editName}
+                  autoFocus
+                  onChange={(e) => setEditName(e.target.value)}
+                  onBlur={() => commitRename(r)}
+                  onKeyDown={(e) => { if (e.key === "Enter") commitRename(r); if (e.key === "Escape") setEditingId(null); }}
+                />
+              ) : (
+                <button className="row-btn" style={styles.campName}
+                  onClick={() => { setEditingId(r.campaign_id); setEditName(r.name); }}>
+                  {r.name}
+                </button>
+              )}
+              <div style={styles.campMeta}>
+                {usage[r.name] ? `${usage[r.name]} לידים` : "אין לידים"}
+                {!r.active && " · לא פעיל"}
+              </div>
+            </div>
+            <button
+              style={{ ...styles.campToggleBtn, opacity: busy === r.campaign_id ? 0.5 : 1,
+                background: r.active ? KAPPA.tealSoft : "#F1F5F9",
+                color: r.active ? KAPPA.tealDark : "#94A3B8",
+                borderColor: r.active ? `${KAPPA.teal}55` : "#E2E8F0" }}
+              disabled={busy === r.campaign_id}
+              onClick={() => toggleActive(r)}>
+              <Power size={14} /> {r.active ? "פעיל" : "מושבת"}
+            </button>
+          </div>
+        ))}
+        {state === "ready" && rows.length === 0 && (
+          <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין קמפיינים. הוסף אחד למעלה.</div>
+        )}
+        <p style={styles.costHint}>
+          לחיצה על שם קמפיין מאפשרת לשנות אותו. השבתה מסתירה את הקמפיין מטופס ליד חדש, אבל
+          משאירה אותו על לידים קיימים ובסטטיסטיקות, כך שהיסטוריה לא הולכת לאיבוד.
+        </p>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>תיעוד עלויות</h3></div>
+        <div style={styles.costForm}>
+          <div style={styles.costFormRow}>
+            <Field label="קמפיין">
+              <select style={styles.input} value={costForm.campaign} onChange={(e) => setCostForm({ ...costForm, campaign: e.target.value })}>
+                <option value="">בחר קמפיין…</option>
+                {rows.map((r) => <option key={r.campaign_id} value={r.name}>{r.name}</option>)}
+              </select>
+            </Field>
+            <Field label="תאריך החיוב">
+              <input style={styles.input} placeholder="dd/mm/yyyy" value={costForm.spend_date} onChange={(e) => setCostForm({ ...costForm, spend_date: e.target.value })} dir="ltr" />
+            </Field>
+          </div>
+          <div style={styles.costFormRow}>
+            <Field label="סכום">
+              <input style={styles.input} value={costForm.amount} onChange={(e) => setCostForm({ ...costForm, amount: e.target.value })} dir="ltr" />
+            </Field>
+            <Field label="מטבע">
+              <select style={styles.input} value={costForm.currency} onChange={(e) => setCostForm({ ...costForm, currency: e.target.value })}>
+                <option value="ILS">₪ שקל</option>
+                <option value="USD">$ דולר</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="הערה">
+            <input style={styles.input} value={costForm.note} onChange={(e) => setCostForm({ ...costForm, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
+          </Field>
+          <button style={{ ...styles.saveBtn, width: "100%", opacity: costSaving ? 0.5 : 1 }} disabled={costSaving} onClick={submitCost}>
+            {costSaving ? "שומר…" : "שמור עלות"}
+          </button>
+          <p style={styles.costHint}>
+            כל שורה היא חיוב בודד עם תאריך. אפשר להזין רטרואקטיבית שורה לכל חיוב, והסינון
+            לפי זמן במסך הסטטיסטיקות יסכום רק את מה שנופל בטווח שנבחר.
+          </p>
+        </div>
+
+        {costState === "loading" && (
+          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען עלויות…</p></div>
+        )}
+        {costState === "ready" && sortedCosts.length === 0 && (
+          <div style={{ padding: "10px 4px", color: "#64748B", fontSize: 14 }}>עדיין לא תועדו עלויות.</div>
+        )}
+        {costState === "ready" && sortedCosts.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.statTable}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>תאריך</th>
+                  <th style={styles.th}>קמפיין</th>
+                  <th style={styles.th}>סכום</th>
+                  <th style={styles.th}>הערה</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCosts.map((c) => (
+                  <tr key={c.cost_id}>
+                    <td style={styles.td}>{c.spend_date}</td>
+                    <td style={styles.tdName}>{c.campaign}</td>
+                    <td style={styles.td}>{money(c.amount, c.currency)}</td>
+                    <td style={styles.td}>{c.note || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p style={styles.costHint}>לתיקון או מחיקה של שורת עלות, ערוך את לשונית CampaignCosts בגיליון.</p>
+      </div>
     </div>
   );
 }
@@ -2273,8 +2580,9 @@ function MeetingAISummary({ lead, onSave }) {
 
 // ============ Add ============
 function AddLead({ onClose, onSave }) {
+  const { active: activeCampaigns } = useCampaigns();
   const [f, setF] = useState({
-    name: "", phone: "", email: "", campaign: CAMPAIGNS[0], referrer: "",
+    name: "", phone: "", email: "", campaign: activeCampaigns[0] || "", referrer: "",
     stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
   });
   const [invRows, setInvRows] = useState([{ track: "", amount: "", compound: false }]);
@@ -2400,22 +2708,28 @@ function DateField({ label, value, onChange }) {
 // stored value — so reporting downstream sees the real campaign name, not
 // a generic "אחר".
 function CampaignField({ value, onChange }) {
-  const KNOWN = CAMPAIGNS.filter((c) => c !== "אחר");
-  const isOther = !!value && !KNOWN.includes(value);
+  const { active, all } = useCampaigns();
+  // A lead may already carry a campaign that has since been deactivated.
+  // Hiding it would silently rewrite that lead's campaign on the next save,
+  // so a deactivated campaign still in use stays selectable on that lead.
+  const known = active.slice();
+  if (value && all.includes(value) && !known.includes(value)) known.push(value);
+  const isOther = !!value && !known.includes(value);
+  const options = known.concat([OTHER]);
   return (
     <Field label="קמפיין">
       <select
         style={styles.input}
-        value={isOther ? "אחר" : (value || "")}
-        onChange={(e) => { const v = e.target.value; onChange(v === "אחר" ? "אחר" : v); }}
+        value={isOther ? OTHER : (value || "")}
+        onChange={(e) => { const v = e.target.value; onChange(v === OTHER ? OTHER : v); }}
       >
         {!value && <option value="" disabled hidden />}
-        {CAMPAIGNS.map((c) => <option key={c} value={c}>{c}</option>)}
+        {options.map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
       {isOther && (
         <input
           style={{ ...styles.input, marginTop: 8 }}
-          value={value === "אחר" ? "" : value}
+          value={value === OTHER ? "" : value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="פרט…"
         />
@@ -2525,6 +2839,11 @@ const styles = {
   costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 11, padding: "14px 16px", margin: "6px 0 16px" },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
   costHint: { fontSize: 12.5, color: "#94A3B8", lineHeight: 1.7, margin: "12px 0 0" },
+  addCampaignRow: { display: "flex", gap: 10, alignItems: "flex-start", margin: "4px 0 14px" },
+  campRow: { display: "flex", alignItems: "center", gap: 12, padding: "12px 2px", borderBottom: "1px solid #F8FAFC" },
+  campName: { background: "none", border: "none", padding: 0, fontSize: 14.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
+  campMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
+  campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 15, padding: "20px 22px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 42, height: 42, borderRadius: 11, display: "grid", placeItems: "center", marginBottom: 14 },
