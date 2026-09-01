@@ -1079,9 +1079,9 @@ function CampaignsAdmin({ leads, session, flash }) {
         </p>
       </div>
 
-      <div style={styles.card}>
+      <div style={{ ...styles.card, marginTop: 24 }}>
         <div style={styles.cardHead}><h3 style={styles.cardTitle}>תיעוד עלויות</h3></div>
-        <div style={styles.costForm}>
+        <div style={styles.costForm} className="cost-form-lg">
           <div style={styles.costGrid}>
             <Field label="קמפיין">
               <select style={styles.input} value={costForm.campaign} onChange={(e) => setCostForm({ ...costForm, campaign: e.target.value })}>
@@ -2810,6 +2810,8 @@ const css = `
   .spin { animation: spin 1s linear infinite; }
   @keyframes slideIn { from { transform: translateX(-30px); opacity:0 } to { transform:translateX(0); opacity:1 } }
   @keyframes toastIn { from { transform: translateY(20px); opacity:0 } to { transform:translateY(0); opacity:1 } }
+  .cost-form-lg label { font-size: 15.5px !important; margin-bottom: 8px !important; }
+  .cost-form-lg input, .cost-form-lg select { font-size: 17px !important; padding: 13px 16px !important; }
   .drawer-grid-2col { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 0 40px; }
   .drawer-grid-2col > div { min-width: 0; }
   @media (max-width: 900px) { .drawer-grid-2col { grid-template-columns: 1fr; } }
@@ -2894,8 +2896,8 @@ const styles = {
   tdName: { textAlign: "right", fontSize: 17, fontWeight: 700, color: KAPPA.ink, padding: "17px 16px", borderBottom: "1px solid #F8FAFC" },
   addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 12, padding: "20px 22px", margin: "6px 26px 18px" },
-  costGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 230px))", gap: "0 16px", justifyContent: "start" },
-  costNoteCell: { maxWidth: 476 },
+  costGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 250px))", gap: "0 16px", justifyContent: "start" },
+  costNoteCell: { maxWidth: 516 },
   costSaveBtn: { width: "auto", padding: "13px 34px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 14 },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
   costHint: { fontSize: 14, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
