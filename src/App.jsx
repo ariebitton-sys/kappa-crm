@@ -1586,13 +1586,13 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
             {recent.map((l) => {
               const st = stageOf(l.stage);
               return (
-                <button key={l.id} className="row-btn" style={styles.recentRow} onClick={() => onOpen(l)}>
-                  <div style={{ ...styles.avatar, background: st.soft, color: st.color }}>{initials(l.name)}</div>
+                <button key={l.id} className="row-btn" style={styles.recentRowLg} onClick={() => onOpen(l)}>
+                  <div style={{ ...styles.avatarDash, background: st.soft, color: st.color }}>{initials(l.name)}</div>
                   <div style={{ flex: 1, textAlign: "right" }}>
-                    <div style={styles.recentName}>{l.name}</div>
-                    <div style={styles.recentMeta}>{l.campaign} · {fmtMoney(l.amount)}</div>
+                    <div style={styles.recentNameLg}>{l.name}</div>
+                    <div style={styles.recentMetaLg}>{l.campaign} · {fmtMoney(l.amount)}</div>
                   </div>
-                  <span style={{ ...styles.chip, background: st.soft, color: st.color }}>{st.label}</span>
+                  <span style={{ ...styles.chipLg, background: st.soft, color: st.color }}>{st.label}</span>
                   <ChevronLeft size={16} color="#CBD5E1" />
                 </button>
               );
@@ -1629,13 +1629,13 @@ function CallList({ title, tint, icon, items, emptyText, onOpen }) {
           const days = Math.round((date - startOfToday()) / 86400000);
           const when = days === 0 ? "היום" : days < 0 ? `לפני ${Math.abs(days)} ימים` : `בעוד ${days} ימים`;
           return (
-            <button key={lead.id} className="row-btn" style={styles.recentRow} onClick={() => onOpen(lead)}>
-              <div style={{ ...styles.avatar, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
+            <button key={lead.id} className="row-btn" style={styles.recentRowLg} onClick={() => onOpen(lead)}>
+              <div style={{ ...styles.avatarDash, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
               <div style={{ flex: 1, textAlign: "right" }}>
-                <div style={styles.recentName}>{lead.name}</div>
-                <div style={styles.recentMeta}>{lead.next_call} · {st.label}</div>
+                <div style={styles.recentNameLg}>{lead.name}</div>
+                <div style={styles.recentMetaLg}>{lead.next_call} · {st.label}</div>
               </div>
-              <span style={{ ...styles.chip, background: tint === "#EF4444" ? "#FEF2F2" : KAPPA.tealSoft, color: tint }}>{when}</span>
+              <span style={{ ...styles.chipLg, background: tint === "#EF4444" ? "#FEF2F2" : KAPPA.tealSoft, color: tint }}>{when}</span>
               <ChevronLeft size={16} color="#CBD5E1" />
             </button>
           );
@@ -2817,15 +2817,15 @@ const styles = {
   loginLoadingText: { fontSize: 13, color: "#94A3B8" },
   loginError: { marginTop: 18, background: "#FEF2F2", color: "#EF4444", fontSize: 13, fontWeight: 600, borderRadius: 9, padding: "10px 14px", lineHeight: 1.5 },
   content: { flex: 1, overflowY: "auto", padding: "28px 30px" },
-  pageTitle: { fontSize: 25, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
-  pageSub: { fontSize: 14, color: "#8695A8", margin: "0 0 24px" },
+  pageTitle: { fontSize: 30, fontWeight: 800, margin: "0 0 6px", color: KAPPA.ink },
+  pageSub: { fontSize: 16, color: "#8695A8", margin: "0 0 26px" },
   tabBar: { display: "flex", gap: 4, borderBottom: "1px solid #E8EDF2", margin: "6px 0 20px", overflowX: "auto" },
-  tabBtn: { background: "none", border: "none", borderBottom: "2.5px solid transparent", padding: "10px 16px", fontSize: 14.5, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap", marginBottom: -1 },
+  tabBtn: { background: "none", border: "none", borderBottom: "3px solid transparent", padding: "13px 20px", fontSize: 17, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap", marginBottom: -1 },
   rangeWrap: { marginBottom: 18 },
   rangeBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
-  rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "8px 15px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
+  rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
   rangeCustom: { display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" },
-  rangeDate: { flex: "1 1 160px", minWidth: 150, padding: "9px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 13.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
+  rangeDate: { flex: "1 1 180px", minWidth: 170, padding: "11px 14px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 15, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
   statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" },
   statDivider: { height: 1, background: "#F1F5F9", margin: "12px 0" },
   convRow: { display: "flex", alignItems: "center", gap: 14, padding: "15px 4px", borderBottom: "1px solid #F8FAFC" },
@@ -2837,30 +2837,30 @@ const styles = {
   td: { textAlign: "right", fontSize: 16, color: KAPPA.graphite, padding: "15px 14px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
   tdName: { textAlign: "right", fontSize: 16, fontWeight: 700, color: KAPPA.ink, padding: "15px 14px", borderBottom: "1px solid #F8FAFC" },
   addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
-  costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 11, padding: "14px 16px", margin: "6px 0 16px" },
+  costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 12, padding: "18px 20px", margin: "6px 0 18px" },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
-  costHint: { fontSize: 12.5, color: "#94A3B8", lineHeight: 1.7, margin: "12px 0 0" },
+  costHint: { fontSize: 14, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
   addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 0 14px" },
-  addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "10px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 14, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
-  addCampaignBtn: { flexShrink: 0, width: "auto", padding: "10px 22px", borderRadius: 9, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
-  campRow: { display: "flex", alignItems: "center", gap: 12, padding: "12px 2px", borderBottom: "1px solid #F8FAFC" },
-  campName: { background: "none", border: "none", padding: 0, fontSize: 14.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
-  campMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
-  campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
+  addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "13px 16px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 16, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
+  addCampaignBtn: { flexShrink: 0, width: "auto", padding: "13px 28px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
+  campRow: { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", borderBottom: "1px solid #F8FAFC" },
+  campName: { background: "none", border: "none", padding: 0, fontSize: 17, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
+  campMeta: { fontSize: 14, color: "#94A3B8", marginTop: 4 },
+  campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
-  kpi: { background: "#fff", borderRadius: 15, padding: "20px 22px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
-  kpiIcon: { width: 42, height: 42, borderRadius: 11, display: "grid", placeItems: "center", marginBottom: 14 },
-  kpiValue: { fontSize: 26, fontWeight: 800, color: KAPPA.ink, lineHeight: 1 },
-  kpiLabel: { fontSize: 13, color: "#8695A8", marginTop: 6, fontWeight: 500 },
+  kpi: { background: "#fff", borderRadius: 16, padding: "24px 26px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
+  kpiIcon: { width: 50, height: 50, borderRadius: 13, display: "grid", placeItems: "center", marginBottom: 16 },
+  kpiValue: { fontSize: 32, fontWeight: 800, color: KAPPA.ink, lineHeight: 1.05 },
+  kpiLabel: { fontSize: 15, color: "#8695A8", marginTop: 8, fontWeight: 500 },
   dashGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 },
   card: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
-  cardHead: { padding: "18px 22px 12px" },
-  cardTitle: { fontSize: 16, fontWeight: 700, margin: 0, color: KAPPA.ink },
-  barRow: { display: "flex", alignItems: "center", gap: 12, padding: "9px 22px" },
-  barLabel: { fontSize: 13.5, color: KAPPA.graphite, width: 96, flexShrink: 0, fontWeight: 500 },
-  barTrack: { flex: 1, height: 9, background: "#F1F5F9", borderRadius: 6, overflow: "hidden" },
+  cardHead: { padding: "22px 26px 14px" },
+  cardTitle: { fontSize: 19, fontWeight: 700, margin: 0, color: KAPPA.ink },
+  barRow: { display: "flex", alignItems: "center", gap: 14, padding: "12px 26px" },
+  barLabel: { fontSize: 15.5, color: KAPPA.graphite, width: 118, flexShrink: 0, fontWeight: 600 },
+  barTrack: { flex: 1, height: 13, background: "#F1F5F9", borderRadius: 7, overflow: "hidden" },
   barFill: { height: "100%", borderRadius: 6, transition: "width .4s" },
-  barCount: { fontSize: 13, fontWeight: 700, color: KAPPA.ink, width: 22, textAlign: "left" },
+  barCount: { fontSize: 16, fontWeight: 800, color: KAPPA.ink, minWidth: 28, textAlign: "left" },
   barRowLg: { display: "flex", alignItems: "center", gap: 16, padding: "13px 22px" },
   barLabelLg: { fontSize: 15.5, color: KAPPA.graphite, width: 150, flexShrink: 0, fontWeight: 600 },
   barTrackLg: { flex: 1, height: 15, background: "#F1F5F9", borderRadius: 8, overflow: "hidden" },
@@ -2871,6 +2871,11 @@ const styles = {
   recentName: { fontSize: 14, fontWeight: 600, color: KAPPA.ink },
   recentMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 2 },
   chip: { fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap" },
+  recentRowLg: { width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "16px 26px", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", cursor: "pointer", fontFamily: FONT, transition: "background .12s" },
+  avatarDash: { width: 46, height: 46, borderRadius: 12, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 },
+  recentNameLg: { fontSize: 16.5, fontWeight: 600, color: KAPPA.ink },
+  recentMetaLg: { fontSize: 14, color: "#94A3B8", marginTop: 3 },
+  chipLg: { fontSize: 13.5, fontWeight: 700, padding: "6px 14px", borderRadius: 20, whiteSpace: "nowrap" },
   board: { display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", paddingBottom: 10 },
   pipeHead: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 12 },
   pipeHeadMain: { display: "flex", alignItems: "flex-start", gap: 18, flexWrap: "wrap", flex: 1, minWidth: 0 },
