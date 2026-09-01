@@ -962,13 +962,13 @@ function CampaignsAdmin({ leads, session, flash }) {
 
         <div style={styles.addCampaignRow}>
           <input
-            style={{ ...styles.input, flex: 1 }}
+            style={styles.addCampaignInput}
             placeholder="שם קמפיין חדש…"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") addCampaign(); }}
           />
-          <button style={{ ...styles.saveBtn, opacity: busy === "add" || !newName.trim() ? 0.5 : 1 }}
+          <button style={{ ...styles.addCampaignBtn, opacity: busy === "add" || !newName.trim() ? 0.5 : 1 }}
             disabled={busy === "add" || !newName.trim()} onClick={addCampaign}>
             {busy === "add" ? "מוסיף…" : "הוסף"}
           </button>
@@ -2839,7 +2839,9 @@ const styles = {
   costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 11, padding: "14px 16px", margin: "6px 0 16px" },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
   costHint: { fontSize: 12.5, color: "#94A3B8", lineHeight: 1.7, margin: "12px 0 0" },
-  addCampaignRow: { display: "flex", gap: 10, alignItems: "flex-start", margin: "4px 0 14px" },
+  addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 0 14px" },
+  addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "10px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 14, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
+  addCampaignBtn: { flexShrink: 0, width: "auto", padding: "10px 22px", borderRadius: 9, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   campRow: { display: "flex", alignItems: "center", gap: 12, padding: "12px 2px", borderBottom: "1px solid #F8FAFC" },
   campName: { background: "none", border: "none", padding: 0, fontSize: 14.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
