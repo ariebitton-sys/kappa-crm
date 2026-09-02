@@ -865,17 +865,206 @@ function ErrorState({ onRetry }) {
 // Campaigns and their spend live side by side here: the list controls which
 // campaigns the lead forms offer, and the ledger below records what each one
 // cost. Both feed the Campaigns tab of the statistics screen.
+// Drill-down for a single campaign: what it cost, when, and how that spend
+// compares to the leads it brought in. The cost ledger here is editable, since
+// charges are often entered retroactively and need correcting.
+function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost, onRename, onToggle, busy, reloadCosts }) {
+  const [range, setRange] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [form, setForm] = useState({ cost_id: "", campaign: campaign.name, spend_date: "", amount: "", currency: "ILS", note: "", created_at: "" });
+  const [saving, setSaving] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(campaign.name);
+
+  const bounds = rangeBounds(range, customFrom, customTo);
+  const mine = costs.filter((c) => String(c.campaign || "").trim() === campaign.name);
+  const inPeriod = mine.filter((c) => inRange(parseDMY(c.spend_date), bounds));
+  const periodLeads = leads.filter((l) =>
+    String(l.campaign || "").trim() === campaign.name && inRange(parseDMY(l.created_at), bounds));
+
+  const totals = sumByCurrency(inPeriod);
+  const curs = currencyList(totals);
+  const totalText = curs.length ? curs.map((c) => money(totals[c], c)).join(" + ") : "—";
+  const perLead = (curs.length && periodLeads.length)
+    ? curs.map((c) => money(totals[c] / periodLeads.length, c)).join(" + ")
+    : "—";
+  const closed = periodLeads.filter((l) => l.stage === "closed").length;
+
+  const sorted = inPeriod.slice().sort((a, b) => {
+    const da = parseDMY(a.spend_date), db = parseDMY(b.spend_date);
+    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+  });
+
+  const editing = form.cost_id !== "";
+  const startEdit = (c) => {
+    setForm({
+      cost_id: String(c.cost_id || ""), campaign: campaign.name,
+      spend_date: String(c.spend_date || ""), amount: String(c.amount || ""),
+      currency: String(c.currency || "ILS").toUpperCase() === "USD" ? "USD" : "ILS",
+      note: String(c.note || ""), created_at: String(c.created_at || ""),
+    });
+  };
+  const resetForm = () => setForm({ cost_id: "", campaign: campaign.name, spend_date: "", amount: "", currency: "ILS", note: "", created_at: "" });
+
+  const submit = async () => {
+    setSaving(true);
+    const ok = await onSaveCost(form);
+    setSaving(false);
+    if (ok) resetForm();
+  };
+
+  const commitRename = async () => {
+    const name = nameDraft.trim();
+    setRenaming(false);
+    if (!name || name === campaign.name) return;
+    await onRename(campaign, name);
+  };
+
+  return (
+    <div>
+      <button className="row-btn" style={styles.backBtn} onClick={onBack}>
+        <ChevronLeft size={18} style={{ transform: "scaleX(-1)" }} /> חזרה לכל הקמפיינים
+      </button>
+
+      <div style={styles.detailHead}>
+        {renaming ? (
+          <input style={{ ...styles.input, maxWidth: 320, fontSize: 20 }} value={nameDraft} autoFocus
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); setNameDraft(campaign.name); } }} />
+        ) : (
+          <h1 style={styles.pageTitle}>{campaign.name}</h1>
+        )}
+        <div style={styles.detailActions}>
+          <button style={styles.campToggleBtn} onClick={() => { setNameDraft(campaign.name); setRenaming(true); }}>
+            <Pencil size={14} /> שנה שם
+          </button>
+          <button
+            style={{ ...styles.campToggleBtn, opacity: busy === campaign.campaign_id ? 0.5 : 1,
+              background: campaign.active ? "#F1F5F9" : KAPPA.tealSoft,
+              color: campaign.active ? "#64748B" : KAPPA.tealDark,
+              borderColor: campaign.active ? "#E2E8F0" : `${KAPPA.teal}55` }}
+            disabled={busy === campaign.campaign_id}
+            onClick={() => onToggle(campaign)}>
+            <Power size={14} /> {campaign.active ? "השבת" : "הפעל"}
+          </button>
+        </div>
+      </div>
+      <p style={styles.pageSub}>
+        <span style={{ ...styles.statusPill, background: campaign.active ? "#ECFDF5" : "#FEF2F2", color: campaign.active ? "#047857" : "#B91C1C" }}>
+          <span style={{ ...styles.statusDot, background: campaign.active ? "#10B981" : "#EF4444" }} />
+          {campaign.active ? "פעיל" : "לא פעיל"}
+        </span>
+      </p>
+
+      <RangePicker value={range} onChange={setRange} customFrom={customFrom} customTo={customTo}
+        onCustom={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
+
+      <div style={styles.kpiRow} className="kpi-row">
+        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="סה״כ הושקע" value={<span style={styles.kpiValueText}>{totalText}</span>} />
+        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים בתקופה" value={periodLeads.length} />
+        <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="עלות לליד" value={<span style={styles.kpiValueText}>{perLead}</span>} />
+        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="סגרו בתקופה" value={closed} />
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardHead}>
+          <h3 style={styles.cardTitle}>{editing ? "עריכת חיוב" : "הוספת חיוב"}</h3>
+        </div>
+        <div style={styles.costForm} className="cost-form-lg">
+          <div style={styles.costGrid}>
+            <DateField label="תאריך החיוב" value={form.spend_date} onChange={(v) => setForm({ ...form, spend_date: v })} />
+            <Field label="סכום">
+              <input style={styles.input} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} dir="ltr" />
+            </Field>
+            <Field label="מטבע">
+              <select style={styles.input} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
+                <option value="ILS">₪ שקל</option>
+                <option value="USD">$ דולר</option>
+              </select>
+            </Field>
+          </div>
+          <div style={styles.costNoteCell}>
+            <Field label="הערה">
+              <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <button style={{ ...styles.costSaveBtn, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={submit}>
+              {saving ? "שומר…" : (editing ? "שמור שינויים" : "הוסף חיוב")}
+            </button>
+            {editing && (
+              <button style={{ ...styles.campToggleBtn, marginTop: 14 }} onClick={resetForm}>ביטול עריכה</button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ ...styles.card, marginTop: 24 }}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>היסטוריית חיובים</h3></div>
+        {costState === "loading" && (
+          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען…</p></div>
+        )}
+        {costState === "error" && (
+          <div style={styles.centerState}>
+            <AlertCircle size={30} color="#EF4444" />
+            <p style={styles.stateText}>לא הצלחנו לטעון את החיובים.</p>
+            <button style={styles.retryBtn} onClick={reloadCosts}>נסה שוב</button>
+          </div>
+        )}
+        {costState === "ready" && sorted.length === 0 && (
+          <div style={{ padding: "16px 26px", color: "#64748B", fontSize: 15 }}>
+            {mine.length === 0 ? "עדיין לא תועדו חיובים לקמפיין הזה." : "אין חיובים בטווח התאריכים שנבחר."}
+          </div>
+        )}
+        {costState === "ready" && sorted.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.statTable}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>תאריך</th>
+                  <th style={styles.thCenter}>סכום</th>
+                  <th style={styles.th}>הערה</th>
+                  <th style={styles.thCenter}>פעולות</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((c) => (
+                  <tr key={c.cost_id} style={form.cost_id === String(c.cost_id) ? { background: KAPPA.tealSoft } : undefined}>
+                    <td style={styles.tdName}>{c.spend_date}</td>
+                    <td style={styles.tdCenter}>{money(c.amount, c.currency)}</td>
+                    <td style={styles.td}>{c.note || "—"}</td>
+                    <td style={styles.tdCenter}>
+                      <button style={styles.campToggleBtn} onClick={() => startEdit(c)}>
+                        <Pencil size={14} /> ערוך
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p style={styles.costHint}>
+          עריכת חיוב מעדכנת את אותה שורה בגיליון ולא יוצרת שורה חדשה. למחיקת חיוב, מחק את
+          השורה בלשונית CampaignCosts בגיליון.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function CampaignsAdmin({ leads, session, flash }) {
   const { rows, reload, save, state } = useCampaigns();
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState("");
-  const [editingId, setEditingId] = useState(null);
-  const [editName, setEditName] = useState("");
 
   const [costs, setCosts] = useState([]);
   const [costState, setCostState] = useState("idle");
   const [costForm, setCostForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
   const [costSaving, setCostSaving] = useState(false);
+  const [openId, setOpenId] = useState(null); // campaign being drilled into
 
   const loadCosts = useCallback(async () => {
     setCostState("loading");
@@ -916,16 +1105,6 @@ function CampaignsAdmin({ leads, session, flash }) {
     const ok = await save({ campaign_id: row.campaign_id, name: row.name, active: !row.active, created_at: row.created_at });
     setBusy("");
     flash(ok ? (row.active ? "הקמפיין הושבת" : "הקמפיין הופעל") : "העדכון נכשל", ok ? "ok" : "err");
-  };
-
-  const commitRename = async (row) => {
-    const name = editName.trim();
-    setEditingId(null);
-    if (!name || name === row.name) return;
-    setBusy(row.campaign_id);
-    const ok = await save({ campaign_id: row.campaign_id, name, active: row.active, created_at: row.created_at });
-    setBusy("");
-    flash(ok ? "השם עודכן" : "העדכון נכשל", ok ? "ok" : "err");
   };
 
   const submitCost = async () => {
@@ -969,6 +1148,51 @@ function CampaignsAdmin({ leads, session, flash }) {
   const avgCostPerLead = (!costCurrencies.length || !attributedLeads)
     ? "—"
     : costCurrencies.map((c) => money(costTotals[c] / attributedLeads, c)).join(" + ");
+
+  // Used by the drill-down view. Sending a cost_id updates that ledger row;
+  // omitting it creates a new charge.
+  const saveCostEntry = async (payload) => {
+    try {
+      const res = await fetch(API.costAdd, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, created_by: session.email || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      flash(payload.cost_id ? "החיוב עודכן" : "החיוב נשמר");
+      await loadCosts();
+      return true;
+    } catch {
+      flash("שמירת החיוב נכשלה — בדוק תאריך וסכום", "err");
+      return false;
+    }
+  };
+
+  const renameCampaign = async (row, name) => {
+    setBusy(row.campaign_id);
+    const ok = await save({ campaign_id: row.campaign_id, name, active: row.active, created_at: row.created_at });
+    setBusy("");
+    flash(ok ? "השם עודכן" : "העדכון נכשל", ok ? "ok" : "err");
+  };
+
+  const openCampaign = rows.find((r) => r.campaign_id === openId) || null;
+  if (openCampaign) {
+    return (
+      <CampaignDetail
+        campaign={openCampaign}
+        leads={leads}
+        costs={costs}
+        costState={costState}
+        reloadCosts={loadCosts}
+        busy={busy}
+        onBack={() => setOpenId(null)}
+        onSaveCost={saveCostEntry}
+        onRename={renameCampaign}
+        onToggle={toggleActive}
+      />
+    );
+  }
 
   return (
     <div>
@@ -1025,22 +1249,11 @@ function CampaignsAdmin({ leads, session, flash }) {
                 {rows.map((r) => (
                   <tr key={r.campaign_id}>
                     <td style={styles.tdName}>
-                      {editingId === r.campaign_id ? (
-                        <input
-                          style={{ ...styles.input, maxWidth: 260 }}
-                          value={editName}
-                          autoFocus
-                          onChange={(e) => setEditName(e.target.value)}
-                          onBlur={() => commitRename(r)}
-                          onKeyDown={(e) => { if (e.key === "Enter") commitRename(r); if (e.key === "Escape") setEditingId(null); }}
-                        />
-                      ) : (
-                        <button className="row-btn" style={styles.campName}
-                          title="לחץ כדי לשנות את השם"
-                          onClick={() => { setEditingId(r.campaign_id); setEditName(r.name); }}>
-                          {r.name}
-                        </button>
-                      )}
+                      <button className="row-btn" style={styles.campName}
+                        title="פתח את הקמפיין"
+                        onClick={() => setOpenId(r.campaign_id)}>
+                        {r.name}
+                      </button>
                     </td>
                     <td style={styles.tdCenter}>
                       <span style={{
@@ -1074,8 +1287,9 @@ function CampaignsAdmin({ leads, session, flash }) {
           <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין קמפיינים. הוסף אחד למעלה.</div>
         )}
         <p style={styles.costHint}>
-          לחיצה על שם קמפיין מאפשרת לשנות אותו. השבתה מסתירה את הקמפיין מטופס ליד חדש, אבל
-          משאירה אותו על לידים קיימים ובסטטיסטיקות, כך שהיסטוריה לא הולכת לאיבוד.
+          לחיצה על שם קמפיין פותחת אותו, עם היסטוריית החיובים וסך ההשקעה. השבתה מסתירה את
+          הקמפיין מטופס ליד חדש, אבל משאירה אותו על לידים קיימים ובסטטיסטיקות, כך
+          שהיסטוריה לא הולכת לאיבוד.
         </p>
       </div>
 
@@ -2910,6 +3124,9 @@ const styles = {
   campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 15px", borderRadius: 20, fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" },
   statusDot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 },
+  backBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "none", color: KAPPA.tealDark, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: "4px 0", marginBottom: 10 },
+  detailHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" },
+  detailActions: { display: "flex", gap: 10, flexShrink: 0 },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 16, padding: "24px 26px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 50, height: 50, borderRadius: 13, display: "grid", placeItems: "center", marginBottom: 16 },
