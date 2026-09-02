@@ -20,6 +20,7 @@ const API = {
   restore: `${API_BASE}/crm/lead/restore`,
   stats: `${API_BASE}/crm/stats`,
   costAdd: `${API_BASE}/crm/campaign-cost/add`,
+  costDelete: `${API_BASE}/crm/campaign-cost/delete`,
   campaigns: `${API_BASE}/crm/campaigns`,
   campaignSave: `${API_BASE}/crm/campaign/save`,
   summarize: `${API_BASE}/crm/lead/summarize`,
@@ -868,7 +869,7 @@ function ErrorState({ onRetry }) {
 // Drill-down for a single campaign: what it cost, when, and how that spend
 // compares to the leads it brought in. The cost ledger here is editable, since
 // charges are often entered retroactively and need correcting.
-function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost, onRename, onToggle, busy, reloadCosts }) {
+function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost, onDeleteCost, onRename, onToggle, busy, reloadCosts }) {
   const [range, setRange] = useState("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -876,6 +877,21 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
   const [saving, setSaving] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(campaign.name);
+  // Deleting a charge is irreversible, so the button asks once before acting
+  // rather than opening a modal for what is otherwise a one-click correction.
+  const [confirmId, setConfirmId] = useState("");
+  const [deletingId, setDeletingId] = useState("");
+
+  const removeCost = async (c) => {
+    const id = String(c.cost_id);
+    if (confirmId !== id) { setConfirmId(id); return; }
+    setDeletingId(id);
+    const ok = await onDeleteCost(id);
+    setDeletingId("");
+    setConfirmId("");
+    // If the row being edited was the one deleted, clear the form too.
+    if (ok && form.cost_id === id) resetForm();
+  };
 
   const bounds = rangeBounds(range, customFrom, customTo);
   const mine = costs.filter((c) => String(c.campaign || "").trim() === campaign.name);
@@ -1036,9 +1052,27 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
                     <td style={styles.tdCenter}>{money(c.amount, c.currency)}</td>
                     <td style={styles.td}>{c.note || "—"}</td>
                     <td style={styles.tdCenter}>
-                      <button style={styles.campToggleBtn} onClick={() => startEdit(c)}>
-                        <Pencil size={14} /> ערוך
-                      </button>
+                      <div style={styles.rowActions}>
+                        <button style={styles.campToggleBtn} onClick={() => startEdit(c)}>
+                          <Pencil size={14} /> ערוך
+                        </button>
+                        <button
+                          style={{
+                            ...styles.campToggleBtn,
+                            opacity: deletingId === String(c.cost_id) ? 0.5 : 1,
+                            background: confirmId === String(c.cost_id) ? "#EF4444" : "#FEF2F2",
+                            color: confirmId === String(c.cost_id) ? "#fff" : "#B91C1C",
+                            borderColor: confirmId === String(c.cost_id) ? "#EF4444" : "#FECACA",
+                          }}
+                          disabled={deletingId === String(c.cost_id)}
+                          onClick={() => removeCost(c)}
+                          onBlur={() => setConfirmId((v) => (v === String(c.cost_id) ? "" : v))}>
+                          <Trash2 size={14} />
+                          {deletingId === String(c.cost_id)
+                            ? "מוחק…"
+                            : (confirmId === String(c.cost_id) ? "בטוח? לחץ שוב" : "מחק")}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1047,8 +1081,8 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
           </div>
         )}
         <p style={styles.costHint}>
-          עריכת חיוב מעדכנת את אותה שורה בגיליון ולא יוצרת שורה חדשה. למחיקת חיוב, מחק את
-          השורה בלשונית CampaignCosts בגיליון.
+          עריכת חיוב מעדכנת את אותה שורה בגיליון ולא יוצרת שורה חדשה. מחיקה מסירה את השורה
+          לצמיתות, ולכן הכפתור מבקש אישור בלחיצה שנייה.
         </p>
       </div>
     </div>
@@ -1169,6 +1203,24 @@ function CampaignsAdmin({ leads, session, flash }) {
     }
   };
 
+  const deleteCostEntry = async (costId) => {
+    try {
+      const res = await fetch(API.costDelete, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cost_id: costId }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      flash("החיוב נמחק");
+      await loadCosts();
+      return true;
+    } catch {
+      flash("מחיקת החיוב נכשלה", "err");
+      return false;
+    }
+  };
+
   const renameCampaign = async (row, name) => {
     setBusy(row.campaign_id);
     const ok = await save({ campaign_id: row.campaign_id, name, active: row.active, created_at: row.created_at });
@@ -1188,6 +1240,7 @@ function CampaignsAdmin({ leads, session, flash }) {
         busy={busy}
         onBack={() => setOpenId(null)}
         onSaveCost={saveCostEntry}
+        onDeleteCost={deleteCostEntry}
         onRename={renameCampaign}
         onToggle={toggleActive}
       />
@@ -3127,6 +3180,7 @@ const styles = {
   backBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "none", color: KAPPA.tealDark, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: "4px 0", marginBottom: 10 },
   detailHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" },
   detailActions: { display: "flex", gap: 10, flexShrink: 0 },
+  rowActions: { display: "inline-flex", gap: 8, justifyContent: "center" },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 16, padding: "24px 26px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 50, height: 50, borderRadius: 13, display: "grid", placeItems: "center", marginBottom: 16 },
