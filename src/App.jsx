@@ -1866,7 +1866,19 @@ function Analytics({ stats, leads, allLeads, onOpen, onFilterClick, session, fla
 }
 
 function Dashboard({ stats, leads, onOpen, onFilterClick }) {
-  const recent = leads.slice(0, 6);
+  // Newest first. created_at is date-only, so leads added on the same day would
+  // tie; those fall back to sheet order, where a later row is the later entry.
+  const recent = leads
+    .map((l, i) => ({ l, i }))
+    .sort((a, b) => {
+      const da = parseDMY(a.l.created_at), db = parseDMY(b.l.created_at);
+      if (da && db && da.getTime() !== db.getTime()) return db.getTime() - da.getTime();
+      if (da && !db) return -1;
+      if (!da && db) return 1;
+      return b.i - a.i;
+    })
+    .slice(0, 6)
+    .map((x) => x.l);
   const byStage = STAGES.map((s) => ({ ...s, count: leads.filter((l) => l.stage === s.id).length }));
   const maxCount = Math.max(1, ...byStage.map((s) => s.count));
 
