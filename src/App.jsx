@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Plus, X, Phone, Mail, Search,
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
-  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut,
+  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, LogOut,
   Maximize2, Minimize2, Trash2
 } from "lucide-react";
 
@@ -140,8 +140,11 @@ const STAGES = [
   { id: "meeting",    label: "נקבעה פגישה",    color: "#8B5CF6", soft: "#F1EBFE" },
   { id: "future",     label: "אולי בעתיד",     color: "#F59E0B", soft: "#FEF4E2" },
   { id: "interested", label: "מעוניין להשקיע", color: "#10B981", soft: "#E6F8F1" },
-  { id: "closed",     label: "סגר",            color: "#0D9488", soft: "#E0F2F1" },
-  { id: "lost",       label: "לא מעוניין",     color: "#94A3B8", soft: "#F1F5F9" },
+  // "Closed" gets its own green (the old teal was a near-match for the brand
+  // colour) and both terminal stages are marked muted so the board's contrast
+  // goes to the stages that still need work.
+  { id: "closed",     label: "סגר",            color: "#15803D", soft: "#E7F6EC", muted: true },
+  { id: "lost",       label: "לא מעוניין",     color: "#94A3B8", soft: "#F1F5F9", muted: true },
 ];
 const ALL_STAGES = STAGES;
 const stageOf = (id) => ALL_STAGES.find((s) => s.id === id) || STAGES[STAGES.length - 1];
@@ -208,6 +211,14 @@ const initials = (name) => (name || "?").split(" ").filter(Boolean).slice(0, 2).
 const todayStr = () => new Date().toLocaleDateString("en-GB");
 // The notes field is append-only (one entry per line); card previews should
 // show only the most recent entry, not the whole run-together history.
+// Split the append-only notes log into dated entries, newest first.
+const noteEntries = (summary) => String(summary || "")
+  .split("\n").map((x) => x.trim()).filter(Boolean)
+  .map((line) => {
+    const m = line.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
+    return m ? { date: m[1], text: m[2] } : { date: "", text: line };
+  })
+  .reverse();
 const lastNote = (summary) => {
   if (!summary) return "";
   const parts = String(summary).split("\n").map((s) => s.trim()).filter(Boolean);
@@ -222,6 +233,20 @@ const parseDMY = (s) => {
   return isNaN(d.getTime()) ? null : d;
 };
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+const fmtDMY = (d) => {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
+};
+// How long a lead has been sitting in its current stage. Uses stage_since
+// (written on every stage change) and falls back to created_at for leads that
+// predate that field.
+const STAGE_AGE_LIMIT = 14; // days before a lead counts as "stuck"
+const daysInStage = (lead) => {
+  const d = parseDMY(lead && (lead.stage_since || lead.created_at));
+  if (!d) return null;
+  return Math.max(0, Math.round((startOfToday() - d) / 86400000));
+};
+const isStuck = (lead) => FUNNEL_STAGES.includes(lead.stage) && (daysInStage(lead) || 0) >= STAGE_AGE_LIMIT;
 // dd/mm/yyyy comparison
 const isDue = (d) => {
   if (!d) return false;
@@ -305,7 +330,29 @@ export default function App() {
     setSession(null);
   };
 
-  const flash = (msg, kind = "ok") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 2600); };
+  // Toasts can carry one action (used for "undo" after a stage change), which
+  // also buys them a longer life on screen.
+  const toastTimer = useRef(null);
+  // The screen and the open lead live in the URL, so a refresh keeps you where
+  // you were, the browser back button works, and a lead can be linked to.
+  const deepLinkRef = useRef(false);
+  useEffect(() => {
+    const apply = () => {
+      const p = new URLSearchParams(window.location.search);
+      const v = p.get("view");
+      if (v === "dashboard" || v === "pipeline" || v === "journey") setView(v);
+      deepLinkRef.current = false;
+    };
+    apply();
+    window.addEventListener("popstate", apply);
+    return () => window.removeEventListener("popstate", apply);
+  }, []);
+
+  const flash = (msg, kind = "ok", action = null) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ msg, kind, action });
+    toastTimer.current = setTimeout(() => setToast(null), action ? 7000 : 2600);
+  };
 
   const loadLeads = useCallback(async (silent = false) => {
     if (silent !== true) setStatus("loading");
@@ -339,6 +386,28 @@ export default function App() {
 
   useEffect(() => { if (session) loadLeads(); }, [loadLeads, session]);
 
+  // Open the lead named in ?lead=… once the list has arrived (once per load).
+  useEffect(() => {
+    if (deepLinkRef.current || !leads.length) return;
+    const id = new URLSearchParams(window.location.search).get("lead");
+    deepLinkRef.current = true;
+    if (!id) return;
+    const found = leads.find((l) => l.id === String(id));
+    if (found) setSelected(found);
+  }, [leads]);
+
+  // Reflect the current screen + open lead back into the address bar.
+  useEffect(() => {
+    if (!session) return;
+    const p = new URLSearchParams(window.location.search);
+    p.set("view", view);
+    if (selected) p.set("lead", selected.id); else p.delete("lead");
+    const next = `${window.location.pathname}?${p.toString()}`;
+    if (next !== window.location.pathname + window.location.search) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [view, selected, session]);
+
   // רענון שקט ברקע כל 30 שניות, כדי שסטטוסים שמתעדכנים מבחוץ (למשל התקדמות מסע ליווי משקיעים
   // דרך לחיצה על קישור במייל) יופיעו בלי צורך ברענון ידני. לא מרענן כשהטאב לא פעיל בדפדפן.
   useEffect(() => {
@@ -364,7 +433,7 @@ export default function App() {
   // range, and stage/group. Independent from the text search above; both
   // apply together. Only affects the Leads (Pipeline) screen, not the
   // dashboard's own aggregate numbers. ----
-  const [pf, setPf] = useState({ createdFrom: "", createdTo: "", dateField: "meeting_date", dateFrom: "", dateTo: "", stages: [] });
+  const [pf, setPf] = useState({ createdFrom: "", createdTo: "", dateField: "meeting_date", dateFrom: "", dateTo: "", stages: [], stuck: false });
   const parseISODateOnly = (s) => {
     if (!s) return null;
     const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -374,11 +443,12 @@ export default function App() {
     const hasCreated = pf.createdFrom || pf.createdTo;
     const hasOther = pf.dateFrom || pf.dateTo;
     const hasStages = pf.stages.length > 0;
-    if (!hasCreated && !hasOther && !hasStages) return filtered;
+    if (!hasCreated && !hasOther && !hasStages && !pf.stuck) return filtered;
     const cf = parseISODateOnly(pf.createdFrom), ct = parseISODateOnly(pf.createdTo);
     const df = parseISODateOnly(pf.dateFrom), dt = parseISODateOnly(pf.dateTo);
     return filtered.filter((l) => {
       if (hasStages && !pf.stages.includes(l.stage)) return false;
+      if (pf.stuck && !isStuck(l)) return false;
       if (hasCreated) {
         const d = parseDMY(l.created_at);
         if (!d) return false;
@@ -396,8 +466,8 @@ export default function App() {
   }, [filtered, pf]);
   // Clicking a dashboard KPI jumps to the Leads screen pre-filtered to the
   // stages that make up that number.
-  const goToFunnelFilter = (stageIds) => {
-    setPf((f) => ({ ...f, stages: stageIds }));
+  const goToFunnelFilter = (stageIds, stuck = false) => {
+    setPf((f) => ({ ...f, stages: stageIds, stuck }));
     setView("pipeline");
   };
 
@@ -412,7 +482,8 @@ export default function App() {
     const pipeline = funnelLeads.reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const committed = [...interested, ...closed].reduce((s, l) => s + (Number(l.amount) || 0), 0);
     const dueCalls = leads.filter((l) => l.stage !== "closed" && l.stage !== "lost" && isDue(l.next_call)).length;
-    return { total: funnelLeads.length, interested: interested.length, pipeline, committed, dueCalls };
+    const stuck = funnelLeads.filter(isStuck).length;
+    return { total: funnelLeads.length, interested: interested.length, pipeline, committed, dueCalls, stuck };
   }, [leads]);
 
   // optimistic stage move → POST /crm/lead/stage
@@ -448,7 +519,9 @@ export default function App() {
   //                          investor's real prior approvals still count.
   const commitMove = async (id, stage, opts = {}) => {
     const prev = leads;
-    const patch = { stage };
+    const fromStage = (leads.find((l) => l.id === id) || {}).stage;
+    // stage_since powers the "days in stage" ageing signal.
+    const patch = { stage, stage_since: todayStr() };
     if (opts.journeyStage != null) patch.journey_stage = opts.journeyStage;
     if (opts.journeyDone != null) patch.journey_done = opts.journeyDone;
     if (opts.resumeStage != null) patch.journey_stage = opts.resumeStage;
@@ -458,7 +531,7 @@ export default function App() {
       // Only send journey_stage / journey_done / resume_stage when explicitly
       // set. Moving a lead OUT of "interested" sends none of these, so the
       // sheet keeps its existing values.
-      const body = { id, stage };
+      const body = { id, stage, stage_since: patch.stage_since };
       if (opts.journeyStage != null) body.journey_stage = opts.journeyStage;
       if (opts.journeyDone != null) body.journey_done = opts.journeyDone;
       if (opts.resumeStage != null) body.resume_stage = opts.resumeStage;
@@ -467,7 +540,15 @@ export default function App() {
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error();
-      flash(opts.resumeStage != null ? "ממשיך מהשלב האחרון — נשלחה תזכורת" : "הסטטוס עודכן");
+      if (opts.resumeStage != null) {
+        flash("ממשיך מהשלב האחרון — נשלחה תזכורת");
+      } else {
+        // A mis-drop in the kanban is the easiest mistake to make here, so the
+        // confirmation doubles as a one-click way back.
+        const backTo = fromStage;
+        flash("הסטטוס עודכן", "ok", backTo && backTo !== stage
+          ? { label: "בטל", run: () => commitMove(id, backTo, {}) } : null);
+      }
     } catch {
       setLeads(prev); flash("העדכון נכשל — הסטטוס שוחזר", "err");
     }
@@ -529,6 +610,15 @@ export default function App() {
     }
   };
 
+  // One-click follow-up housekeeping straight from a card / table row, so the
+  // most common two edits don't require opening the drawer.
+  const snoozeCall = (lead, days = 1) => {
+    const base = parseDMY(lead.next_call) || startOfToday();
+    base.setDate(base.getDate() + days);
+    updateLead({ ...lead, next_call: fmtDMY(base) });
+  };
+  const markContacted = (lead) => updateLead({ ...lead, last_contact: todayStr() });
+
   if (!session) {
     return <LoginScreen onCredential={handleGoogleCredential} error={authError} checking={authChecking} />;
   }
@@ -581,7 +671,7 @@ export default function App() {
           {status === "error" && <ErrorState onRetry={() => loadLeads()} />}
           {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} onFilterClick={goToFunnelFilter} />}
           {status === "ready" && view === "pipeline" && (
-            <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} />
+            <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
           )}
           {status === "ready" && view === "journey" && (
             <JourneyBoard leads={leads.filter((l) => l.stage === "interested")} onOpen={setSelected} />
@@ -605,7 +695,7 @@ export default function App() {
           onMove={(s) => moveLead(selected.id, s)} onSave={updateLead}
           onRequestDelete={() => setConfirmDelete(selected)} />
       )}
-      {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} />}
+      {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} leads={leads} />}
 
       {journeyPrompt && (
         <div style={styles.confirmOverlay} onClick={() => setJourneyPrompt(null)}>
@@ -638,6 +728,9 @@ export default function App() {
       {toast && (
         <div style={{ ...styles.toast, background: toast.kind === "err" ? "#EF4444" : KAPPA.ink }}>
           {toast.kind === "err" ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />} {toast.msg}
+          {toast.action && (
+            <button style={styles.toastAction} onClick={() => { toast.action.run(); setToast(null); }}>{toast.action.label}</button>
+          )}
         </div>
       )}
     </div>
@@ -755,6 +848,7 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} onClick={() => onFilterClick(["interested"])} />
         <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="פוטנציאל במשפך לידים" value={fmtMoney(stats.pipeline)} onClick={() => onFilterClick(FUNNEL_STAGES)} />
         <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="התחייבו / סגרו" value={fmtMoney(stats.committed)} onClick={() => onFilterClick(["interested", "closed"])} />
+        <Kpi icon={<Clock size={20} />} tint="#EF4444" label={`תקועים ${STAGE_AGE_LIMIT}+ ימים`} value={stats.stuck} onClick={() => onFilterClick(FUNNEL_STAGES, true)} />
       </div>
       <div style={styles.dashGrid} className="dash-grid">
         <div style={styles.card}>
@@ -886,7 +980,7 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
   const hasCreated = !!(filters.createdFrom || filters.createdTo);
   const hasOther = !!(filters.dateFrom || filters.dateTo);
   const hasStages = filters.stages.length > 0;
-  const anyActive = hasCreated || hasOther || hasStages;
+  const anyActive = hasCreated || hasOther || hasStages || filters.stuck;
   const dateFieldLabel = (DATE_FILTER_FIELDS.find((f) => f.id === filters.dateField) || DATE_FILTER_FIELDS[0]).label;
 
   const toggleStage = (id) => {
@@ -960,8 +1054,14 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
         )}
       </div>
 
+      <button
+        style={{ ...styles.filterBtn, ...(filters.stuck ? styles.filterBtnActive : {}) }}
+        onClick={() => onChange((f) => ({ ...f, stuck: !f.stuck }))}>
+        <Clock size={14} />תקועים {STAGE_AGE_LIMIT}+{filters.stuck && <span style={styles.filterDot} />}
+      </button>
+
       {anyActive && (
-        <button style={styles.filterClearAll} onClick={() => onChange((f) => ({ ...f, createdFrom: "", createdTo: "", dateFrom: "", dateTo: "", stages: [] }))}>
+        <button style={styles.filterClearAll} onClick={() => onChange((f) => ({ ...f, createdFrom: "", createdTo: "", dateFrom: "", dateTo: "", stages: [], stuck: false }))}>
           נקה סינון
         </button>
       )}
@@ -970,7 +1070,7 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
 }
 
 // ============ Pipeline ============
-function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters, onFiltersChange }) {
+function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters, onFiltersChange, onSnooze, onContacted }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
   const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
@@ -1040,7 +1140,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
         <div style={styles.pipeHeadMain}>
           <div>
             <h1 style={styles.pageTitle}>לידים</h1>
-            <p style={styles.pageSub}>{isMobile ? "הקש על ליד לפתיחה ושינוי שלב" : (mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "רשימת הלידים מקובצת לפי שלב")}</p>
+            <p style={styles.pageSub}>{isMobile ? "הקש על ליד לפתיחה ושינוי שלב" : (mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "לחץ על כותרת עמודה כדי למיין")}</p>
           </div>
           <PipelineFilterBar filters={filters} onChange={onFiltersChange} isMobile={isMobile} />
         </div>
@@ -1065,7 +1165,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
             const isOver = overStage === stage.id && drag;
             return (
               <div key={stage.id} className="col" data-stage={stage.id}
-                style={{ ...styles.col, background: isOver ? stage.soft : "#EFF2F6", outline: isOver ? `2px dashed ${stage.color}` : "none" }}>
+                style={{ ...styles.col, background: isOver ? stage.soft : (stage.muted ? "#F3F5F8" : "#EFF2F6"), opacity: stage.muted && !isOver ? 0.78 : 1, outline: isOver ? `2px dashed ${stage.color}` : "none" }}>
                 <div style={styles.colHead}>
                   <span style={{ ...styles.colDot, background: stage.color }} />
                   <span style={styles.colTitle}>{stage.label}</span>
@@ -1078,7 +1178,8 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
                       onClick={() => onOpen(l)}
                       onPointerDown={(e) => startDrag(e, l)}
                       dragging={drag && drag.id === l.id}
-                      isMobile={isMobile} />
+                      isMobile={isMobile}
+                      onSnooze={onSnooze} onContacted={onContacted} />
                   ))}
                   {all.length === 0 && <div style={styles.emptyCol}>גרור לכאן</div>}
                   {(hidden > 0 || isOpen) && all.length > COLLAPSED_LIMIT && (
@@ -1092,7 +1193,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
           })}
         </div>
       ) : (
-        <ListView leads={leads} onOpen={onOpen} onMove={onMove} startDrag={startDrag} drag={drag} overStage={overStage} isMobile={isMobile} />
+        <ListView leads={leads} onOpen={onOpen} onMove={onMove} isMobile={isMobile} onSnooze={onSnooze} onContacted={onContacted} />
       )}
 
       {drag && (
@@ -1113,105 +1214,103 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
   );
 }
 
-function ListView({ leads, onOpen, onMove, startDrag, drag, overStage, isMobile }) {
-  return (
-    <div style={styles.listWrap}>
-      {STAGES.map((stage) => {
-        const items = leads.filter((l) => l.stage === stage.id);
-        const sum = items.reduce((s, l) => s + (Number(l.amount) || 0), 0);
-        const isOver = drag && overStage === stage.id && drag.lead.stage !== stage.id;
-        // Empty groups still render (thin drop zone) so leads can be dragged into them
-        return (
-          <div key={stage.id} data-stage={stage.id}
-            style={{
-              ...styles.listGroup,
-              outline: isOver ? `2px dashed ${stage.color}` : "none",
-              background: isOver ? stage.soft : "#fff",
-            }}>
-            <div style={styles.listGroupHead}>
-              <span style={{ ...styles.colDot, background: stage.color }} />
-              <span style={styles.listGroupTitle}>{stage.label}</span>
-              <span style={styles.colCount}>{items.length}</span>
-              {sum > 0 && <span style={styles.listGroupSum}>{fmtMoney(sum)}</span>}
-            </div>
-            <div style={styles.listRows}>
-              {items.map((l) => {
-                const due = isDue(l.next_call);
-                const dragging = drag && drag.id === l.id;
-                return (
-                  <ListRow key={l.id} lead={l} stage={stage} due={due} dragging={dragging}
-                    onOpen={onOpen} onMove={onMove} startDrag={startDrag} isMobile={isMobile} />
-                );
-              })}
-              {items.length === 0 && <div style={styles.listEmpty}>גרור לכאן</div>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// A single draggable list row. Uses a small movement threshold so a plain
-// click still opens the drawer and the <select> still works — drag only
-// starts once the pointer actually moves.
-function ListRow({ lead, stage, due, dragging, onOpen, onMove, startDrag, isMobile }) {
-  const startRef = React.useRef(null);
-  const movedRef = React.useRef(false);
-
-  const handleDown = (e) => {
-    if (e.button != null && e.button !== 0) return;
-    startRef.current = { x: e.clientX, y: e.clientY };
-    movedRef.current = false;
-    const onMoveEvt = (ev) => {
-      if (!startRef.current) return;
-      const dx = Math.abs(ev.clientX - startRef.current.x);
-      const dy = Math.abs(ev.clientY - startRef.current.y);
-      if (dx > 5 || dy > 5) {
-        movedRef.current = true;
-        window.removeEventListener("pointermove", onMoveEvt);
-        startDrag(e, lead); // hand off to Pipeline's shared drag engine
-      }
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMoveEvt);
-      window.removeEventListener("pointerup", onUp);
-      startRef.current = null;
-    };
-    window.addEventListener("pointermove", onMoveEvt);
-    window.addEventListener("pointerup", onUp);
+// A flat, sortable table of every lead in the current filter. Unlike the
+// kanban it is NOT grouped by stage — it exists to answer "who owes me a call",
+// "who is the biggest", "who went quiet", which grouping by stage hides.
+function ListView({ leads, onOpen, onMove, isMobile, onSnooze, onContacted }) {
+  const [sort, setSort] = useState({ key: "next_call", dir: "asc" });
+  const cols = [
+    { key: "name", label: "שם" },
+    { key: "stage", label: "שלב" },
+    { key: "campaign", label: "קמפיין" },
+    { key: "amount", label: "סכום", num: true },
+    { key: "next_call", label: "שיחה הבאה" },
+    { key: "last_contact", label: "קשר אחרון" },
+    { key: "age", label: "ימים בשלב", num: true },
+  ];
+  const valueOf = (l, k) => {
+    if (k === "amount") return Number(l.amount) || 0;
+    if (k === "age") return daysInStage(l) == null ? -1 : daysInStage(l);
+    if (k === "stage") return STAGES.findIndex((st) => st.id === l.stage);
+    if (k === "next_call" || k === "last_contact") {
+      const d = parseDMY(l[k]);
+      return d ? d.getTime() : Infinity; // undated rows sink to the bottom
+    }
+    return String(l[k] || "");
   };
+  const sorted = useMemo(() => {
+    const dir = sort.dir === "asc" ? 1 : -1;
+    return [...leads].sort((a, b) => {
+      const va = valueOf(a, sort.key), vb = valueOf(b, sort.key);
+      if (va === vb) return 0;
+      if (typeof va === "string") return va.localeCompare(vb, "he") * dir;
+      return (va < vb ? -1 : 1) * dir;
+    });
+  }, [leads, sort]);
+  const toggle = (k) => setSort((p) => (p.key === k ? { key: k, dir: p.dir === "asc" ? "desc" : "asc" } : { key: k, dir: k === "amount" || k === "age" ? "desc" : "asc" }));
+
+  if (!leads.length) return <div style={styles.tableEmpty}>אין לידים שתואמים לסינון.</div>;
 
   return (
-    <div className="list-row" style={{ ...styles.listRow, opacity: dragging ? 0.35 : 1, touchAction: isMobile ? "auto" : "none" }}>
-      {!isMobile && (
-        <button style={styles.listDragHandle} onPointerDown={handleDown} title="גרור כדי להעביר שלב" aria-label="גרור">
-          <GripVertical size={16} color="#CBD5E1" />
-        </button>
-      )}
-      <button style={styles.listMain} onPointerDown={isMobile ? undefined : handleDown}
-        onClick={() => { if (isMobile || !movedRef.current) onOpen(lead); }}>
-        <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
-        <div style={{ minWidth: 140, textAlign: "right" }}>
-          <div style={styles.leadName}>{lead.name}</div>
-          <div style={styles.recentMeta}>{lead.campaign || "—"}</div>
-        </div>
-      </button>
-      <div style={styles.listMeta}>
-        {Number(lead.amount) > 0 && <span style={styles.leadTag}><DollarSign size={11} />{Math.round(Number(lead.amount) / 1000)}K</span>}
-        {lead.track && <span style={styles.leadTag}>{lead.track}</span>}
-        {lead.stage === "lost" && lead.lost_reason && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{lead.lost_reason}</span>}
-        {lead.next_call && <span style={{ ...styles.leadCall, color: due ? "#EF4444" : "#94A3B8" }}><Clock size={11} /> {lead.next_call}</span>}
-      </div>
-      <select value={lead.stage} onChange={(e) => onMove(lead.id, e.target.value)} style={styles.stageSelect} onClick={(e) => e.stopPropagation()}>
-        {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-      </select>
+    <div style={styles.tableWrap}>
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            {cols.map((c) => (
+              <th key={c.key} style={styles.th} scope="col">
+                <button style={styles.thBtn} onClick={() => toggle(c.key)} aria-label={`מיין לפי ${c.label}`}>
+                  {c.label}<span style={styles.thArrow}>{sort.key === c.key ? (sort.dir === "asc" ? "▲" : "▼") : ""}</span>
+                </button>
+              </th>
+            ))}
+            <th style={styles.th} scope="col"><span style={styles.thStatic}>פעולות</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((l) => {
+            const st = stageOf(l.stage);
+            const due = isDue(l.next_call);
+            const age = daysInStage(l);
+            const stuck = isStuck(l);
+            return (
+              <tr key={l.id} className="table-row" style={styles.tr} onClick={() => onOpen(l)}>
+                <td style={styles.td}>
+                  <div style={styles.tdName}>
+                    <div style={{ ...styles.avatarSm, background: st.soft, color: st.color }}>{initials(l.name)}</div>
+                    <span style={styles.leadName}>{l.name}</span>
+                  </div>
+                </td>
+                <td style={styles.td} onClick={(e) => e.stopPropagation()}>
+                  <select value={l.stage} onChange={(e) => onMove(l.id, e.target.value)} style={{ ...styles.stageSelect, color: st.color }} aria-label={`שלב עבור ${l.name}`}>
+                    {STAGES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                  </select>
+                </td>
+                <td style={{ ...styles.td, color: "#8695A8" }}>{l.campaign || "—"}</td>
+                <td style={{ ...styles.td, fontWeight: 700, direction: "ltr", textAlign: "right" }}>{fmtMoney(l.amount)}</td>
+                <td style={{ ...styles.td, color: due ? "#EF4444" : KAPPA.graphite, fontWeight: due ? 700 : 500 }}>{l.next_call || "—"}</td>
+                <td style={{ ...styles.td, color: "#8695A8" }}>{l.last_contact || "—"}</td>
+                <td style={styles.td}>
+                  {age == null ? "—" : <span style={{ ...styles.ageTag, ...(stuck ? styles.ageTagStuck : {}) }}>{age}</span>}
+                </td>
+                <td style={styles.td} onClick={(e) => e.stopPropagation()}>
+                  <div style={styles.quickRow}>
+                    <button style={styles.quickBtn} onClick={() => onContacted(l)} title="סמן שדובר היום">דובר היום</button>
+                    <button style={styles.quickBtn} onClick={() => onSnooze(l, 1)} title="דחה את השיחה ביום">דחה יום</button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile }) {
+function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onSnooze, onContacted }) {
   const due = isDue(lead.next_call);
+  const age = daysInStage(lead);
+  const stuck = isStuck(lead);
   const startRef = React.useRef(null);
   const movedRef = React.useRef(false);
 
@@ -1252,6 +1351,7 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile }) {
         {Number(lead.amount) > 0 && <span style={styles.leadTag}><DollarSign size={11} />{Math.round(Number(lead.amount) / 1000)}K</span>}
         {lead.track && <span style={styles.leadTag}>{lead.track}</span>}
         {lead.stage === "lost" && lead.lost_reason && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{lead.lost_reason}</span>}
+        {stuck && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{age} ימים בשלב</span>}
       </div>
       <div style={styles.leadFoot}>
         <span style={styles.leadCampaign}>{lead.campaign}</span>
@@ -1260,6 +1360,10 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile }) {
             <Clock size={11} /> {lead.next_call}
           </span>
         )}
+      </div>
+      <div className="card-quick" style={{ ...styles.quickRow, ...(isMobile ? { opacity: 1 } : {}) }} onPointerDown={(e) => e.stopPropagation()}>
+        <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}>דובר היום</button>
+        <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onSnooze && onSnooze(lead, 1); }}>דחה יום</button>
       </div>
     </div>
   );
@@ -1677,6 +1781,7 @@ function Detail({ label, value, highlight }) {
 // entry (dated) is added at the end and saved immediately — no need to open
 // the full edit drawer just to jot something down.
 function SummaryNotes({ lead, onSave }) {
+  const entries = useMemo(() => noteEntries(lead.summary), [lead.summary]);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const addNote = async () => {
@@ -1696,7 +1801,16 @@ function SummaryNotes({ lead, onSave }) {
   return (
     <div style={styles.summaryBox}>
       <div style={styles.summaryLabel}>הערות</div>
-      {lead.summary && <p style={styles.summaryText}>{lead.summary}</p>}
+      {entries.length > 0 && (
+        <div style={styles.noteList}>
+          {entries.map((n, i) => (
+            <div key={i} style={styles.noteItem}>
+              {n.date && <span style={styles.noteDate}>{n.date}</span>}
+              <p style={styles.noteText}>{n.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={styles.summaryAddRow}>
         <textarea
           style={styles.summaryAddInput}
@@ -1804,7 +1918,7 @@ function MeetingAISummary({ lead, onSave }) {
 }
 
 // ============ Add ============
-function AddLead({ onClose, onSave }) {
+function AddLead({ onClose, onSave, leads = [] }) {
   const [f, setF] = useState({
     name: "", phone: "", email: "", campaign: CAMPAIGNS[0], referrer: "",
     stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
@@ -1817,7 +1931,20 @@ function AddLead({ onClose, onSave }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const valid = f.name.trim().length > 0;
+  const emailOk = !f.email.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.email.trim());
+  const phoneOk = !f.phone.trim() || normPhone(f.phone).length >= 9;
+  // Warn (never block) when the phone / email / name already exists — a duplicate
+  // lead is the most expensive data-quality mistake to unpick later.
+  const dupes = useMemo(() => {
+    const phone = normPhone(f.phone), email = normText(f.email), name = normText(f.name);
+    if (!phone && !email && !name) return [];
+    return leads.filter((l) =>
+      (phone.length >= 9 && normPhone(l.phone) === phone) ||
+      (!!email && normText(l.email) === email) ||
+      (name.length > 2 && normText(l.name) === name)
+    ).slice(0, 3);
+  }, [leads, f.phone, f.email, f.name]);
+  const valid = f.name.trim().length > 0 && emailOk && phoneOk;
   const submit = async () => {
     setSaving(true);
     // Same cleanup/aggregation as the lead editor, so a lead created here
@@ -1846,9 +1973,26 @@ function AddLead({ onClose, onSave }) {
         <div style={styles.drawerBody} className="drawer-body">
           <Field label="שם מלא *"><input style={styles.input} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="שם המתעניין" /></Field>
           <div style={styles.fieldRow}>
-            <Field label="טלפון"><input style={styles.input} value={f.phone} onChange={(e) => set("phone", e.target.value)} dir="ltr" /></Field>
-            <Field label="אימייל"><input style={styles.input} value={f.email} onChange={(e) => set("email", e.target.value)} dir="ltr" /></Field>
+            <Field label="טלפון">
+              <input style={{ ...styles.input, ...(phoneOk ? {} : styles.inputInvalid) }} value={f.phone} onChange={(e) => set("phone", e.target.value)} dir="ltr" />
+              {!phoneOk && <div style={styles.fieldError}>מספר טלפון קצר מדי</div>}
+            </Field>
+            <Field label="אימייל">
+              <input style={{ ...styles.input, ...(emailOk ? {} : styles.inputInvalid) }} value={f.email} onChange={(e) => set("email", e.target.value)} dir="ltr" />
+              {!emailOk && <div style={styles.fieldError}>כתובת אימייל לא תקינה</div>}
+            </Field>
           </div>
+          {dupes.length > 0 && (
+            <div style={styles.dupBox}>
+              <AlertCircle size={15} />
+              <div>
+                <strong>ייתכן שהליד כבר קיים:</strong>
+                {dupes.map((d) => (
+                  <div key={d.id} style={styles.dupRow}>{d.name} · {d.phone || "—"} · {stageOf(d.stage).label}</div>
+                ))}
+              </div>
+            </div>
+          )}
           <div style={styles.fieldRow}>
             <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
             <Field label="גורם מפנה"><input style={styles.input} value={f.referrer} onChange={(e) => set("referrer", e.target.value)} /></Field>
@@ -1972,6 +2116,12 @@ const css = `
   .kpi-clickable:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); transform: translateY(-1px); }
   .kpi-clickable:focus-visible { outline: 2px solid ${KAPPA.teal}; outline-offset: 2px; }
   .row-btn:hover { background: #F8FAFC; }
+  .table-row:hover { background: #F8FAFC; }
+  .card-quick { opacity: 0; transition: opacity .12s; }
+  .lead-card:hover .card-quick, .lead-card:focus-within .card-quick { opacity: 1; }
+  button:focus-visible, a:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid ${KAPPA.teal}; outline-offset: 2px; border-radius: 6px;
+  }
   input:focus, select:focus, textarea:focus { outline: none; border-color: ${KAPPA.teal} !important; box-shadow: 0 0 0 3px ${KAPPA.teal}22; }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 8px; }
@@ -1999,6 +2149,29 @@ const css = `
 
 const FONT = `"Heebo", "Assistant", -apple-system, "Segoe UI", sans-serif`;
 const styles = {
+  tableWrap: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflowX: "auto" },
+  table: { width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: 860 },
+  th: { textAlign: "right", padding: "10px 14px", borderBottom: "1px solid #EAEEF3", background: "#F8FAFC", whiteSpace: "nowrap", position: "sticky", top: 0 },
+  thBtn: { display: "inline-flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: "#64748B", padding: 0 },
+  thStatic: { fontSize: 12.5, fontWeight: 700, color: "#64748B" },
+  thArrow: { fontSize: 9, color: KAPPA.teal },
+  tr: { borderBottom: "1px solid #F1F5F9", cursor: "pointer" },
+  td: { padding: "11px 14px", fontSize: 13.5, color: KAPPA.graphite, verticalAlign: "middle", whiteSpace: "nowrap" },
+  tdName: { display: "flex", alignItems: "center", gap: 10 },
+  tableEmpty: { background: "#fff", borderRadius: 15, padding: "44px 20px", textAlign: "center", color: "#94A3B8", fontSize: 14 },
+  ageTag: { display: "inline-block", minWidth: 26, textAlign: "center", padding: "2px 8px", borderRadius: 20, background: "#F1F5F9", color: "#64748B", fontSize: 12, fontWeight: 700 },
+  ageTagStuck: { background: "#FEF2F2", color: "#B91C1C" },
+  quickRow: { display: "flex", gap: 6, marginTop: 8 },
+  quickBtn: { border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.graphite, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
+  toastAction: { marginRight: 10, border: "1px solid rgba(255,255,255,0.4)", background: "transparent", color: "#fff", borderRadius: 7, padding: "3px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  noteList: { display: "flex", flexDirection: "column", gap: 8, margin: "4px 0 12px" },
+  noteItem: { background: "#fff", border: "1px solid #EAEEF3", borderRadius: 10, padding: "8px 11px" },
+  noteDate: { display: "block", fontSize: 11, fontWeight: 700, color: "#94A3B8", marginBottom: 3 },
+  noteText: { margin: 0, fontSize: 13.5, lineHeight: 1.6, color: KAPPA.ink, whiteSpace: "pre-wrap" },
+  inputInvalid: { borderColor: "#EF4444" },
+  fieldError: { fontSize: 11.5, color: "#EF4444", fontWeight: 600, marginTop: 4 },
+  dupBox: { display: "flex", gap: 9, alignItems: "flex-start", background: "#FFFBEB", border: "1px solid #FDE68A", color: "#92400E", borderRadius: 11, padding: "10px 12px", fontSize: 13, lineHeight: 1.6, marginBottom: 14 },
+  dupRow: { fontSize: 12.5, fontWeight: 600, marginTop: 2 },
   app: { display: "flex", height: "100vh", fontFamily: FONT, background: "#F4F6F9", color: KAPPA.ink, direction: "rtl" },
   appMobile: { flexDirection: "column", height: "100dvh" },
   mainMobile: { paddingBottom: 68 },
@@ -2042,7 +2215,7 @@ const styles = {
   content: { flex: 1, overflowY: "auto", padding: "28px 30px" },
   pageTitle: { fontSize: 25, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
   pageSub: { fontSize: 14, color: "#8695A8", margin: "0 0 24px" },
-  kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
+  kpiRow: { display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 15, padding: "20px 22px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 42, height: 42, borderRadius: 11, display: "grid", placeItems: "center", marginBottom: 14 },
   kpiValue: { fontSize: 26, fontWeight: 800, color: KAPPA.ink, lineHeight: 1 },
