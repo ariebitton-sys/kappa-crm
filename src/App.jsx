@@ -4,7 +4,7 @@ import {
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
   Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, GripVertical, LogOut,
-  Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power
+  Maximize2, Minimize2, Trash2
 } from "lucide-react";
 
 // ============ API ============
@@ -16,13 +16,6 @@ const API = {
   update: `${API_BASE}/crm/lead/update`,
   stage:  `${API_BASE}/crm/lead/stage`,
   delete: `${API_BASE}/crm/lead/delete`,
-  deleted: `${API_BASE}/crm/leads/deleted`,
-  restore: `${API_BASE}/crm/lead/restore`,
-  stats: `${API_BASE}/crm/stats`,
-  costAdd: `${API_BASE}/crm/campaign-cost/add`,
-  costDelete: `${API_BASE}/crm/campaign-cost/delete`,
-  campaigns: `${API_BASE}/crm/campaigns`,
-  campaignSave: `${API_BASE}/crm/campaign/save`,
   summarize: `${API_BASE}/crm/lead/summarize`,
 };
 
@@ -165,23 +158,7 @@ const DATE_FILTER_FIELDS = [
 
 const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "העברה בנקאית", "גישה לאגורה", "פרטי תשלום ראשון"];
 
-// Fallback campaign list. Campaigns now live in the Campaigns tab of the sheet
-// and are fetched at startup; this list is only used if that fetch fails, so a
-// network problem can never leave the new-lead form without a campaign field.
-// "אחר" is not a stored campaign — it's the free-text escape hatch in the UI.
-const CAMPAIGNS_FALLBACK = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "נטוורקינג", "אתר אינטרנט - SEO", "PPC"];
-const OTHER = "אחר";
-
-// Campaigns are shared by the lead forms, the stats tabs and the management
-// screen, so they're provided via context rather than threaded through every
-// component. The hook always returns a usable shape, so a component rendered
-// outside the provider (or before the fetch lands) still works.
-const CampaignsCtx = React.createContext(null);
-function useCampaigns() {
-  const v = React.useContext(CampaignsCtx);
-  if (v) return v;
-  return { rows: [], all: CAMPAIGNS_FALLBACK, active: CAMPAIGNS_FALLBACK, reload: () => {}, save: async () => false, state: "idle" };
-}
+const CAMPAIGNS = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "אתר אינטרנט - SEO", "PPC", "אחר"];
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
 // Tracks that support compound interest (ריבית דריבית). Only these show the toggle.
 const COMPOUND_TRACKS = ["Multi Single", "Brick Capital"];
@@ -216,6 +193,16 @@ function investmentsTracksLabel(rows) {
 const fmtMoney = (n) => {
   const num = Number(n);
   return !n || isNaN(num) ? "—" : "$" + num.toLocaleString("en-US");
+};
+// Search normalization: lowercase + collapse whitespace so "Dan  COHEN"
+// matches "dan cohen".
+const normText = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+// Phone normalization: strip everything but digits and rewrite +972 / 972 to a
+// local 0-prefix, so 052-123-4567, 0521234567 and +972521234567 all match.
+const normPhone = (s) => {
+  let d = String(s || "").replace(/[^\d]/g, "");
+  if (d.startsWith("972")) d = "0" + d.slice(3);
+  return d;
 };
 const initials = (name) => (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
 const todayStr = () => new Date().toLocaleDateString("en-GB");
@@ -274,6 +261,7 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const isMobile = useIsMobile();
   const [status, setStatus] = useState("loading"); // loading | ready | error
+  const [refreshing, setRefreshing] = useState(false); // manual refresh — spins the button only
   const [view, setView] = useState("dashboard");
   const [selected, setSelected] = useState(null);
   const [adding, setAdding] = useState(false);
@@ -282,7 +270,6 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [journeyPrompt, setJourneyPrompt] = useState(null); // { id, resumeStage } pending move into "interested"
   const [confirmDelete, setConfirmDelete] = useState(null); // lead pending permanent deletion
-  const [binOpen, setBinOpen] = useState(false); // recycle bin of deleted leads
 
   // ---- Auth (Google Sign-In, restricted to @kappainv.com) ----
   const [session, setSession] = useState(() => {
@@ -320,49 +307,6 @@ export default function App() {
 
   const flash = (msg, kind = "ok") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 2600); };
 
-  // ---- Campaigns (shared with lead forms + stats + management screen) ----
-  const [campaignRows, setCampaignRows] = useState([]);
-  const [campaignState, setCampaignState] = useState("idle");
-
-  const loadCampaigns = useCallback(async () => {
-    setCampaignState("loading");
-    try {
-      const res = await fetch(API.campaigns);
-      if (!res.ok) throw new Error();
-      const d = await res.json();
-      setCampaignRows(Array.isArray(d.campaigns) ? d.campaigns : []);
-      setCampaignState("ready");
-    } catch {
-      setCampaignState("error");
-    }
-  }, []);
-  useEffect(() => { if (session) loadCampaigns(); }, [session, loadCampaigns]);
-
-  const saveCampaign = async (row) => {
-    try {
-      const res = await fetch(API.campaignSave, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...row, created_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      await loadCampaigns();
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // If the fetch failed we fall back to the built-in list rather than showing
-  // an empty campaign picker, which would look like data loss to the user.
-  const campaignsValue = useMemo(() => {
-    const usable = campaignState === "ready" && campaignRows.length > 0;
-    const all = usable ? campaignRows.map((c) => c.name) : CAMPAIGNS_FALLBACK;
-    const active = usable ? campaignRows.filter((c) => c.active).map((c) => c.name) : CAMPAIGNS_FALLBACK;
-    return { rows: campaignRows, all, active, reload: loadCampaigns, save: saveCampaign, state: campaignState };
-  }, [campaignRows, campaignState, loadCampaigns]);
-
   const loadLeads = useCallback(async (silent = false) => {
     if (silent !== true) setStatus("loading");
     try {
@@ -371,11 +315,27 @@ export default function App() {
       const data = await res.json();
       const rows = (data.leads || []).map((l) => ({ ...l, id: String(l.id) }));
       setLeads(rows);
+      // Keep an open drawer showing fresh data: the background refresh used to
+      // update the list only, leaving `selected` frozen at load-time values.
+      setSelected((cur) => {
+        if (!cur) return cur;
+        const next = rows.find((r) => r.id === cur.id);
+        return next ? { ...cur, ...next } : cur;
+      });
       setStatus("ready");
     } catch (e) {
       if (silent !== true) setStatus("error");
     }
   }, []);
+
+  // Manual refresh keeps the current screen on-screen (scroll position, open
+  // columns, filters) and spins only the button — a full "loading" state used
+  // to unmount everything on every click.
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadLeads(true);
+    setRefreshing(false);
+  }, [loadLeads]);
 
   useEffect(() => { if (session) loadLeads(); }, [loadLeads, session]);
 
@@ -391,11 +351,13 @@ export default function App() {
 
   const filtered = useMemo(() => {
     if (!query.trim()) return leads;
-    const q = query.trim();
-    return leads.filter((l) =>
-      (l.name || "").includes(q) || (l.email || "").includes(q) ||
-      (l.phone || "").includes(q) || (l.referrer || "").includes(q)
-    );
+    const q = normText(query);
+    const qDigits = normPhone(query);
+    return leads.filter((l) => {
+      if (normText(l.name).includes(q) || normText(l.email).includes(q) ||
+          normText(l.referrer).includes(q) || normText(l.phone).includes(q)) return true;
+      return qDigits.length >= 3 && normPhone(l.phone).includes(qDigits);
+    });
   }, [leads, query]);
 
   // ---- Leads-screen filters: creation date range, another date field's
@@ -486,7 +448,6 @@ export default function App() {
   //                          investor's real prior approvals still count.
   const commitMove = async (id, stage, opts = {}) => {
     const prev = leads;
-    const before = leads.find((l) => l.id === id);
     const patch = { stage };
     if (opts.journeyStage != null) patch.journey_stage = opts.journeyStage;
     if (opts.journeyDone != null) patch.journey_done = opts.journeyDone;
@@ -497,15 +458,7 @@ export default function App() {
       // Only send journey_stage / journey_done / resume_stage when explicitly
       // set. Moving a lead OUT of "interested" sends none of these, so the
       // sheet keeps its existing values.
-      // from_stage / name / changed_by feed the Events log in n8n: the client
-      // already knows the previous stage, so sending it avoids an extra sheet
-      // read on the server for every card move.
-      const body = {
-        id, stage,
-        from_stage: (before && before.stage) || "",
-        name: (before && before.name) || "",
-        changed_by: session.email || "",
-      };
+      const body = { id, stage };
       if (opts.journeyStage != null) body.journey_stage = opts.journeyStage;
       if (opts.journeyDone != null) body.journey_done = opts.journeyDone;
       if (opts.resumeStage != null) body.resume_stage = opts.resumeStage;
@@ -576,33 +529,11 @@ export default function App() {
     }
   };
 
-  // restore lead → POST /crm/lead/restore
-  // Writes the archived lead back into the Leads sheet and stamps the archive
-  // row as restored, so the deletion stays on record but drops out of the bin.
-  const restoreLead = async (row) => {
-    try {
-      const res = await fetch(API.restore, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: row.id, restored_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      await loadLeads(true);
-      flash("הליד שוחזר וחזר למערכת");
-      return true;
-    } catch {
-      flash("השחזור נכשל — הליד נשאר בסל המחיקות", "err");
-      return false;
-    }
-  };
-
   if (!session) {
     return <LoginScreen onCredential={handleGoogleCredential} error={authError} checking={authChecking} />;
   }
 
   return (
-    <CampaignsCtx.Provider value={campaignsValue}>
     <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
 
@@ -614,7 +545,6 @@ export default function App() {
           <nav style={styles.nav}>
             <NavItem icon={<LayoutDashboard size={19} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
-            <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
           <div style={styles.sidebarFoot}>
@@ -629,11 +559,8 @@ export default function App() {
             <Search size={18} color="#94A3B8" />
             <input style={styles.search} placeholder={isMobile ? "חיפוש…" : "חיפוש לפי שם, טלפון, אימייל, מפנה…"} value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
-          <button style={styles.refreshBtn} onClick={loadLeads} title="רענן">
-            <RefreshCw size={16} className={status === "loading" ? "spin" : ""} />
-          </button>
-          <button style={styles.refreshBtn} onClick={() => setBinOpen(true)} title="סל המחיקות" aria-label="סל המחיקות">
-            <Archive size={16} />
+          <button style={styles.refreshBtn} onClick={refresh} title="רענן" aria-label="רענן">
+            <RefreshCw size={16} className={refreshing || status === "loading" ? "spin" : ""} />
           </button>
           {stats.dueCalls > 0 && (
             <div style={{ ...styles.dueBadge, ...(isMobile ? styles.dueBadgeMobile : {}) }}><CalendarClock size={16} />{isMobile ? ` ${stats.dueCalls}` : ` ${stats.dueCalls} שיחות להיום`}</div>
@@ -651,13 +578,10 @@ export default function App() {
 
         <div style={{ ...styles.content, ...(isMobile ? styles.contentMobile : {}) }}>
           {status === "loading" && <Loading />}
-          {status === "error" && <ErrorState onRetry={loadLeads} />}
-          {status === "ready" && view === "dashboard" && <Analytics stats={stats} leads={filtered} allLeads={leads} onOpen={setSelected} onFilterClick={goToFunnelFilter} session={session} flash={flash} />}
+          {status === "error" && <ErrorState onRetry={() => loadLeads()} />}
+          {status === "ready" && view === "dashboard" && <Dashboard stats={stats} leads={filtered} onOpen={setSelected} onFilterClick={goToFunnelFilter} />}
           {status === "ready" && view === "pipeline" && (
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} />
-          )}
-          {status === "ready" && view === "campaigns" && (
-            <CampaignsAdmin leads={leads} session={session} flash={flash} />
           )}
           {status === "ready" && view === "journey" && (
             <JourneyBoard leads={leads.filter((l) => l.stage === "interested")} onOpen={setSelected} />
@@ -671,7 +595,6 @@ export default function App() {
           <nav style={styles.bottomNav}>
             <BottomNavItem icon={<LayoutDashboard size={22} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <BottomNavItem icon={<Users size={22} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
-            <BottomNavItem icon={<Megaphone size={22} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <BottomNavItem icon={<Target size={22} />} label="ליווי" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
         </>
@@ -712,16 +635,12 @@ export default function App() {
       {confirmDelete && (
         <DeleteConfirm lead={confirmDelete} onCancel={() => setConfirmDelete(null)} onConfirm={deleteLead} />
       )}
-      {binOpen && (
-        <DeletedBin onClose={() => setBinOpen(false)} onRestore={restoreLead} />
-      )}
       {toast && (
         <div style={{ ...styles.toast, background: toast.kind === "err" ? "#EF4444" : KAPPA.ink }}>
           {toast.kind === "err" ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />} {toast.msg}
         </div>
       )}
     </div>
-    </CampaignsCtx.Provider>
   );
 }
 
@@ -768,82 +687,6 @@ function DeleteConfirm({ lead, onCancel, onConfirm }) {
   );
 }
 
-// Recycle bin: everything sitting in the "Deleted" tab that has not been
-// restored yet. Loaded on open rather than kept in app state, since it is a
-// rarely-used recovery screen and should always show the sheet's current truth.
-function DeletedBin({ onClose, onRestore }) {
-  const [rows, setRows] = useState([]);
-  const [state, setState] = useState("loading"); // loading | ready | error
-  const [busyId, setBusyId] = useState(null);
-
-  const load = useCallback(async () => {
-    setState("loading");
-    try {
-      const res = await fetch(API.deleted);
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      setRows((data.deleted || []).map((r) => ({ ...r, id: String(r.id) })));
-      setState("ready");
-    } catch {
-      setState("error");
-    }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const restore = async (row) => {
-    setBusyId(row.id);
-    const ok = await onRestore(row);
-    setBusyId(null);
-    if (ok) setRows((rs) => rs.filter((r) => r.id !== row.id));
-  };
-
-  return (
-    <div style={styles.confirmOverlay} onClick={onClose}>
-      <div style={styles.binBox} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.binHead}>
-          <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>סל המחיקות</h3>
-        </div>
-        <div style={styles.binBody}>
-          {state === "loading" && (
-            <div style={styles.centerState}><RefreshCw size={26} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען…</p></div>
-          )}
-          {state === "error" && (
-            <div style={styles.centerState}>
-              <AlertCircle size={32} color="#EF4444" />
-              <p style={styles.stateText}>לא הצלחנו לטעון את סל המחיקות.</p>
-              <button style={styles.retryBtn} onClick={load}>נסה שוב</button>
-            </div>
-          )}
-          {state === "ready" && rows.length === 0 && (
-            <div style={styles.centerState}>
-              <Archive size={32} color="#94A3B8" />
-              <p style={styles.stateText}>אין לידים מחוקים.</p>
-            </div>
-          )}
-          {state === "ready" && rows.map((r) => (
-            <div key={r.id} style={styles.binRow}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={styles.binName}>{r.name || "ללא שם"}</div>
-                <div style={styles.binMeta}>
-                  נמחק {r.deleted_at || "—"}{r.deleted_by ? ` · ${r.deleted_by}` : ""}
-                </div>
-                {r.delete_reason && <div style={styles.binReason}>סיבה: {r.delete_reason}</div>}
-              </div>
-              <button
-                style={{ ...styles.restoreBtn, opacity: busyId === r.id ? 0.5 : 1 }}
-                disabled={busyId === r.id}
-                onClick={() => restore(r)}>
-                <RotateCcw size={14} /> {busyId === r.id ? "משחזר…" : "שחזר"}
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Loading() {
   return (
     <div style={styles.centerState}>
@@ -858,561 +701,6 @@ function ErrorState({ onRetry }) {
       <AlertCircle size={38} color="#EF4444" />
       <p style={styles.stateText}>לא הצלחנו לטעון את הלידים.</p>
       <button style={styles.retryBtn} onClick={onRetry}>נסה שוב</button>
-    </div>
-  );
-}
-
-// ============ Campaign management ============
-// Campaigns and their spend live side by side here: the list controls which
-// campaigns the lead forms offer, and the ledger below records what each one
-// cost. Both feed the Campaigns tab of the statistics screen.
-// Drill-down for a single campaign: what it cost, when, and how that spend
-// compares to the leads it brought in. The cost ledger here is editable, since
-// charges are often entered retroactively and need correcting.
-function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost, onDeleteCost, onRename, onToggle, busy, reloadCosts }) {
-  const [range, setRange] = useState("all");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
-  const [form, setForm] = useState({ cost_id: "", campaign: campaign.name, spend_date: "", amount: "", currency: "ILS", note: "", created_at: "" });
-  const [saving, setSaving] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(campaign.name);
-  // Deleting a charge is irreversible, so the button asks once before acting
-  // rather than opening a modal for what is otherwise a one-click correction.
-  const [confirmId, setConfirmId] = useState("");
-  const [deletingId, setDeletingId] = useState("");
-
-  const removeCost = async (c) => {
-    const id = String(c.cost_id);
-    if (confirmId !== id) { setConfirmId(id); return; }
-    setDeletingId(id);
-    const ok = await onDeleteCost(id);
-    setDeletingId("");
-    setConfirmId("");
-    // If the row being edited was the one deleted, clear the form too.
-    if (ok && form.cost_id === id) resetForm();
-  };
-
-  const bounds = rangeBounds(range, customFrom, customTo);
-  const mine = costs.filter((c) => String(c.campaign || "").trim() === campaign.name);
-  const inPeriod = mine.filter((c) => inRange(parseDMY(c.spend_date), bounds));
-  const periodLeads = leads.filter((l) =>
-    String(l.campaign || "").trim() === campaign.name && inRange(parseDMY(l.created_at), bounds));
-
-  const totals = sumByCurrency(inPeriod);
-  const curs = currencyList(totals);
-  const totalText = curs.length ? curs.map((c) => money(totals[c], c)).join(" + ") : "—";
-  const perLead = (curs.length && periodLeads.length)
-    ? curs.map((c) => money(totals[c] / periodLeads.length, c)).join(" + ")
-    : "—";
-  const closed = periodLeads.filter((l) => l.stage === "closed").length;
-
-  const sorted = inPeriod.slice().sort((a, b) => {
-    const da = parseDMY(a.spend_date), db = parseDMY(b.spend_date);
-    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-  });
-
-  const editing = form.cost_id !== "";
-  const startEdit = (c) => {
-    setForm({
-      cost_id: String(c.cost_id || ""), campaign: campaign.name,
-      spend_date: String(c.spend_date || ""), amount: String(c.amount || ""),
-      currency: String(c.currency || "ILS").toUpperCase() === "USD" ? "USD" : "ILS",
-      note: String(c.note || ""), created_at: String(c.created_at || ""),
-    });
-  };
-  const resetForm = () => setForm({ cost_id: "", campaign: campaign.name, spend_date: "", amount: "", currency: "ILS", note: "", created_at: "" });
-
-  const submit = async () => {
-    setSaving(true);
-    const ok = await onSaveCost(form);
-    setSaving(false);
-    if (ok) resetForm();
-  };
-
-  const commitRename = async () => {
-    const name = nameDraft.trim();
-    setRenaming(false);
-    if (!name || name === campaign.name) return;
-    await onRename(campaign, name);
-  };
-
-  return (
-    <div>
-      <button className="row-btn" style={styles.backBtn} onClick={onBack}>
-        <ChevronLeft size={18} style={{ transform: "scaleX(-1)" }} /> חזרה לכל הקמפיינים
-      </button>
-
-      <div style={styles.detailHead}>
-        {renaming ? (
-          <input style={{ ...styles.input, maxWidth: 320, fontSize: 20 }} value={nameDraft} autoFocus
-            onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); setNameDraft(campaign.name); } }} />
-        ) : (
-          <h1 style={styles.pageTitle}>{campaign.name}</h1>
-        )}
-        <div style={styles.detailActions}>
-          <button style={styles.campToggleBtn} onClick={() => { setNameDraft(campaign.name); setRenaming(true); }}>
-            <Pencil size={14} /> שנה שם
-          </button>
-          <button
-            style={{ ...styles.campToggleBtn, opacity: busy === campaign.campaign_id ? 0.5 : 1,
-              background: campaign.active ? "#F1F5F9" : KAPPA.tealSoft,
-              color: campaign.active ? "#64748B" : KAPPA.tealDark,
-              borderColor: campaign.active ? "#E2E8F0" : `${KAPPA.teal}55` }}
-            disabled={busy === campaign.campaign_id}
-            onClick={() => onToggle(campaign)}>
-            <Power size={14} /> {campaign.active ? "השבת" : "הפעל"}
-          </button>
-        </div>
-      </div>
-      <p style={styles.pageSub}>
-        <span style={{ ...styles.statusPill, background: campaign.active ? "#ECFDF5" : "#FEF2F2", color: campaign.active ? "#047857" : "#B91C1C" }}>
-          <span style={{ ...styles.statusDot, background: campaign.active ? "#10B981" : "#EF4444" }} />
-          {campaign.active ? "פעיל" : "לא פעיל"}
-        </span>
-      </p>
-
-      <RangePicker value={range} onChange={setRange} customFrom={customFrom} customTo={customTo}
-        onCustom={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
-
-      <div style={styles.kpiRow} className="kpi-row">
-        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="סה״כ הושקע" value={<span style={styles.kpiValueText}>{totalText}</span>} />
-        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים בתקופה" value={periodLeads.length} />
-        <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="עלות לליד" value={<span style={styles.kpiValueText}>{perLead}</span>} />
-        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="סגרו בתקופה" value={closed} />
-      </div>
-
-      <div style={styles.card}>
-        <div style={styles.cardHead}>
-          <h3 style={styles.cardTitle}>{editing ? "עריכת חיוב" : "הוספת חיוב"}</h3>
-        </div>
-        <div style={styles.costForm} className="cost-form-lg">
-          <div style={styles.costGrid}>
-            <DateField label="תאריך החיוב" value={form.spend_date} onChange={(v) => setForm({ ...form, spend_date: v })} />
-            <Field label="סכום">
-              <input style={styles.input} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} dir="ltr" />
-            </Field>
-            <Field label="מטבע">
-              <select style={styles.input} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
-                <option value="ILS">₪ שקל</option>
-                <option value="USD">$ דולר</option>
-              </select>
-            </Field>
-          </div>
-          <div style={styles.costNoteCell}>
-            <Field label="הערה">
-              <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
-            </Field>
-          </div>
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <button style={{ ...styles.costSaveBtn, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={submit}>
-              {saving ? "שומר…" : (editing ? "שמור שינויים" : "הוסף חיוב")}
-            </button>
-            {editing && (
-              <button style={{ ...styles.campToggleBtn, marginTop: 14 }} onClick={resetForm}>ביטול עריכה</button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ ...styles.card, marginTop: 24 }}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>היסטוריית חיובים</h3></div>
-        {costState === "loading" && (
-          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען…</p></div>
-        )}
-        {costState === "error" && (
-          <div style={styles.centerState}>
-            <AlertCircle size={30} color="#EF4444" />
-            <p style={styles.stateText}>לא הצלחנו לטעון את החיובים.</p>
-            <button style={styles.retryBtn} onClick={reloadCosts}>נסה שוב</button>
-          </div>
-        )}
-        {costState === "ready" && sorted.length === 0 && (
-          <div style={{ padding: "16px 26px", color: "#64748B", fontSize: 15 }}>
-            {mine.length === 0 ? "עדיין לא תועדו חיובים לקמפיין הזה." : "אין חיובים בטווח התאריכים שנבחר."}
-          </div>
-        )}
-        {costState === "ready" && sorted.length > 0 && (
-          <div style={{ overflowX: "auto" }}>
-            <table style={styles.statTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>תאריך</th>
-                  <th style={styles.thCenter}>סכום</th>
-                  <th style={styles.th}>הערה</th>
-                  <th style={styles.thCenter}>פעולות</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((c) => (
-                  <tr key={c.cost_id} style={form.cost_id === String(c.cost_id) ? { background: KAPPA.tealSoft } : undefined}>
-                    <td style={styles.tdName}>{c.spend_date}</td>
-                    <td style={styles.tdCenter}>{money(c.amount, c.currency)}</td>
-                    <td style={styles.td}>{c.note || "—"}</td>
-                    <td style={styles.tdCenter}>
-                      <div style={styles.rowActions}>
-                        <button style={styles.campToggleBtn} onClick={() => startEdit(c)}>
-                          <Pencil size={14} /> ערוך
-                        </button>
-                        <button
-                          style={{
-                            ...styles.campToggleBtn,
-                            opacity: deletingId === String(c.cost_id) ? 0.5 : 1,
-                            background: confirmId === String(c.cost_id) ? "#EF4444" : "#FEF2F2",
-                            color: confirmId === String(c.cost_id) ? "#fff" : "#B91C1C",
-                            borderColor: confirmId === String(c.cost_id) ? "#EF4444" : "#FECACA",
-                          }}
-                          disabled={deletingId === String(c.cost_id)}
-                          onClick={() => removeCost(c)}
-                          onBlur={() => setConfirmId((v) => (v === String(c.cost_id) ? "" : v))}>
-                          <Trash2 size={14} />
-                          {deletingId === String(c.cost_id)
-                            ? "מוחק…"
-                            : (confirmId === String(c.cost_id) ? "בטוח? לחץ שוב" : "מחק")}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <p style={styles.costHint}>
-          עריכת חיוב מעדכנת את אותה שורה בגיליון ולא יוצרת שורה חדשה. מחיקה מסירה את השורה
-          לצמיתות, ולכן הכפתור מבקש אישור בלחיצה שנייה.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function CampaignsAdmin({ leads, session, flash }) {
-  const { rows, reload, save, state } = useCampaigns();
-  const [newName, setNewName] = useState("");
-  const [busy, setBusy] = useState("");
-
-  const [costs, setCosts] = useState([]);
-  const [costState, setCostState] = useState("idle");
-  const [costForm, setCostForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
-  const [costSaving, setCostSaving] = useState(false);
-  const [openId, setOpenId] = useState(null); // campaign being drilled into
-
-  const loadCosts = useCallback(async () => {
-    setCostState("loading");
-    try {
-      const res = await fetch(API.stats);
-      if (!res.ok) throw new Error();
-      const d = await res.json();
-      setCosts(Array.isArray(d.costs) ? d.costs : []);
-      setCostState("ready");
-    } catch {
-      setCostState("error");
-    }
-  }, []);
-  useEffect(() => { loadCosts(); }, [loadCosts]);
-
-  // Lead counts decide whether a campaign can be removed outright: deleting one
-  // that leads still reference would leave those leads pointing at a campaign
-  // that no longer exists, so those get deactivated instead.
-  const usage = {};
-  leads.forEach((l) => {
-    const c = String(l.campaign || "").trim();
-    if (c) usage[c] = (usage[c] || 0) + 1;
-  });
-
-  const addCampaign = async () => {
-    const name = newName.trim();
-    if (!name) return;
-    if (rows.some((r) => r.name === name)) { flash("קמפיין בשם הזה כבר קיים", "err"); return; }
-    setBusy("add");
-    const ok = await save({ name, active: true });
-    setBusy("");
-    if (ok) { setNewName(""); flash("הקמפיין נוסף"); }
-    else flash("הוספת הקמפיין נכשלה", "err");
-  };
-
-  const toggleActive = async (row) => {
-    setBusy(row.campaign_id);
-    const ok = await save({ campaign_id: row.campaign_id, name: row.name, active: !row.active, created_at: row.created_at });
-    setBusy("");
-    flash(ok ? (row.active ? "הקמפיין הושבת" : "הקמפיין הופעל") : "העדכון נכשל", ok ? "ok" : "err");
-  };
-
-  const submitCost = async () => {
-    setCostSaving(true);
-    try {
-      const res = await fetch(API.costAdd, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...costForm, created_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      flash("העלות נשמרה");
-      setCostForm({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
-      await loadCosts();
-    } catch {
-      flash("שמירת העלות נכשלה — בדוק קמפיין, תאריך וסכום", "err");
-    }
-    setCostSaving(false);
-  };
-
-  const sortedCosts = costs.slice().sort((a, b) => {
-    const da = parseDMY(a.spend_date), db = parseDMY(b.spend_date);
-    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-  });
-
-  // ---- header figures ----
-  const now = new Date();
-  const leadsThisMonth = leads.filter((l) => {
-    const d = parseDMY(l.created_at);
-    return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).length;
-  const activeCount = rows.filter((r) => r.active).length;
-  const topName = Object.keys(usage).sort((a, b) => usage[b] - usage[a])[0];
-  const topCampaign = topName || "—";
-  // Averaged over every lead that carries a campaign, since a lead with no
-  // campaign was never paid for through one. Currencies stay separate.
-  const attributedLeads = leads.filter((l) => String(l.campaign || "").trim() !== "").length;
-  const costTotals = sumByCurrency(costs);
-  const costCurrencies = currencyList(costTotals);
-  const avgCostPerLead = (!costCurrencies.length || !attributedLeads)
-    ? "—"
-    : costCurrencies.map((c) => money(costTotals[c] / attributedLeads, c)).join(" + ");
-
-  // Used by the drill-down view. Sending a cost_id updates that ledger row;
-  // omitting it creates a new charge.
-  const saveCostEntry = async (payload) => {
-    try {
-      const res = await fetch(API.costAdd, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, created_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      flash(payload.cost_id ? "החיוב עודכן" : "החיוב נשמר");
-      await loadCosts();
-      return true;
-    } catch {
-      flash("שמירת החיוב נכשלה — בדוק תאריך וסכום", "err");
-      return false;
-    }
-  };
-
-  const deleteCostEntry = async (costId) => {
-    try {
-      const res = await fetch(API.costDelete, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cost_id: costId }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      flash("החיוב נמחק");
-      await loadCosts();
-      return true;
-    } catch {
-      flash("מחיקת החיוב נכשלה", "err");
-      return false;
-    }
-  };
-
-  const renameCampaign = async (row, name) => {
-    setBusy(row.campaign_id);
-    const ok = await save({ campaign_id: row.campaign_id, name, active: row.active, created_at: row.created_at });
-    setBusy("");
-    flash(ok ? "השם עודכן" : "העדכון נכשל", ok ? "ok" : "err");
-  };
-
-  const openCampaign = rows.find((r) => r.campaign_id === openId) || null;
-  if (openCampaign) {
-    return (
-      <CampaignDetail
-        campaign={openCampaign}
-        leads={leads}
-        costs={costs}
-        costState={costState}
-        reloadCosts={loadCosts}
-        busy={busy}
-        onBack={() => setOpenId(null)}
-        onSaveCost={saveCostEntry}
-        onDeleteCost={deleteCostEntry}
-        onRename={renameCampaign}
-        onToggle={toggleActive}
-      />
-    );
-  }
-
-  return (
-    <div>
-      <h1 style={styles.pageTitle}>ניהול קמפיינים</h1>
-      <p style={styles.pageSub}>הקמפיינים הפעילים כאן הם אלה שיוצעו בטופס ליד חדש</p>
-
-      <div style={styles.kpiRow} className="kpi-row">
-        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="סה״כ לידים החודש" value={leadsThisMonth} />
-        <Kpi icon={<Megaphone size={20} />} tint="#8B5CF6" label="קמפיינים פעילים" value={activeCount} />
-        <Kpi icon={<TrendingUp size={20} />} tint="#10B981" label="הקמפיין המוביל"
-          value={<span style={styles.kpiValueText}>{topCampaign}</span>} />
-        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="עלות ממוצעת לליד" value={avgCostPerLead} />
-      </div>
-
-      <div style={styles.card}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>ניהול קמפיינים</h3></div>
-
-        <div style={styles.addCampaignRow}>
-          <input
-            style={styles.addCampaignInput}
-            placeholder="שם קמפיין חדש…"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") addCampaign(); }}
-          />
-          <button style={{ ...styles.addCampaignBtn, opacity: busy === "add" || !newName.trim() ? 0.5 : 1 }}
-            disabled={busy === "add" || !newName.trim()} onClick={addCampaign}>
-            {busy === "add" ? "מוסיף…" : "הוסף"}
-          </button>
-        </div>
-
-        {state === "loading" && (
-          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען קמפיינים…</p></div>
-        )}
-        {state === "error" && (
-          <div style={styles.centerState}>
-            <AlertCircle size={30} color="#EF4444" />
-            <p style={styles.stateText}>לא הצלחנו לטעון את הקמפיינים.</p>
-            <button style={styles.retryBtn} onClick={reload}>נסה שוב</button>
-          </div>
-        )}
-        {state === "ready" && rows.length > 0 && (
-          <div style={{ overflowX: "auto" }}>
-            <table style={styles.statTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>שם הקמפיין</th>
-                  <th style={styles.thCenter}>סטטוס</th>
-                  <th style={styles.thCenter}>כמות לידים</th>
-                  <th style={styles.thCenter}>פעולות</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.campaign_id}>
-                    <td style={styles.tdName}>
-                      <button className="row-btn" style={styles.campName}
-                        title="פתח את הקמפיין"
-                        onClick={() => setOpenId(r.campaign_id)}>
-                        {r.name}
-                      </button>
-                    </td>
-                    <td style={styles.tdCenter}>
-                      <span style={{
-                        ...styles.statusPill,
-                        background: r.active ? "#ECFDF5" : "#FEF2F2",
-                        color: r.active ? "#047857" : "#B91C1C",
-                      }}>
-                        <span style={{ ...styles.statusDot, background: r.active ? "#10B981" : "#EF4444" }} />
-                        {r.active ? "פעיל" : "לא פעיל"}
-                      </span>
-                    </td>
-                    <td style={styles.tdCenter}>{usage[r.name] || 0}</td>
-                    <td style={styles.tdCenter}>
-                      <button
-                        style={{ ...styles.campToggleBtn, opacity: busy === r.campaign_id ? 0.5 : 1,
-                          background: r.active ? "#F1F5F9" : KAPPA.tealSoft,
-                          color: r.active ? "#64748B" : KAPPA.tealDark,
-                          borderColor: r.active ? "#E2E8F0" : `${KAPPA.teal}55` }}
-                        disabled={busy === r.campaign_id}
-                        onClick={() => toggleActive(r)}>
-                        <Power size={14} /> {busy === r.campaign_id ? "…" : (r.active ? "השבת" : "הפעל")}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {state === "ready" && rows.length === 0 && (
-          <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין קמפיינים. הוסף אחד למעלה.</div>
-        )}
-        <p style={styles.costHint}>
-          לחיצה על שם קמפיין פותחת אותו, עם היסטוריית החיובים וסך ההשקעה. השבתה מסתירה את
-          הקמפיין מטופס ליד חדש, אבל משאירה אותו על לידים קיימים ובסטטיסטיקות, כך
-          שהיסטוריה לא הולכת לאיבוד.
-        </p>
-      </div>
-
-      <div style={{ ...styles.card, marginTop: 24 }}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>תיעוד עלויות</h3></div>
-        <div style={styles.costForm} className="cost-form-lg">
-          <div style={styles.costGrid}>
-            <Field label="קמפיין">
-              <select style={styles.input} value={costForm.campaign} onChange={(e) => setCostForm({ ...costForm, campaign: e.target.value })}>
-                <option value="">בחר קמפיין…</option>
-                {rows.map((r) => <option key={r.campaign_id} value={r.name}>{r.name}</option>)}
-              </select>
-            </Field>
-            <DateField label="תאריך החיוב" value={costForm.spend_date} onChange={(v) => setCostForm({ ...costForm, spend_date: v })} />
-            <Field label="סכום">
-              <input style={styles.input} value={costForm.amount} onChange={(e) => setCostForm({ ...costForm, amount: e.target.value })} dir="ltr" />
-            </Field>
-            <Field label="מטבע">
-              <select style={styles.input} value={costForm.currency} onChange={(e) => setCostForm({ ...costForm, currency: e.target.value })}>
-                <option value="ILS">₪ שקל</option>
-                <option value="USD">$ דולר</option>
-              </select>
-            </Field>
-          </div>
-          <div style={styles.costNoteCell}>
-            <Field label="הערה">
-              <input style={styles.input} value={costForm.note} onChange={(e) => setCostForm({ ...costForm, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
-            </Field>
-          </div>
-          <button style={{ ...styles.costSaveBtn, opacity: costSaving ? 0.5 : 1 }} disabled={costSaving} onClick={submitCost}>
-            {costSaving ? "שומר…" : "שמור עלות"}
-          </button>
-          <p style={styles.costHint}>
-            כל שורה היא חיוב בודד עם תאריך. אפשר להזין רטרואקטיבית שורה לכל חיוב, והסינון
-            לפי זמן במסך הסטטיסטיקות יסכום רק את מה שנופל בטווח שנבחר.
-          </p>
-        </div>
-
-        {costState === "loading" && (
-          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען עלויות…</p></div>
-        )}
-        {costState === "ready" && sortedCosts.length === 0 && (
-          <div style={{ padding: "10px 4px", color: "#64748B", fontSize: 14 }}>עדיין לא תועדו עלויות.</div>
-        )}
-        {costState === "ready" && sortedCosts.length > 0 && (
-          <div style={{ overflowX: "auto" }}>
-            <table style={styles.statTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>תאריך</th>
-                  <th style={styles.th}>קמפיין</th>
-                  <th style={styles.th}>סכום</th>
-                  <th style={styles.th}>הערה</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedCosts.map((c) => (
-                  <tr key={c.cost_id}>
-                    <td style={styles.td}>{c.spend_date}</td>
-                    <td style={styles.tdName}>{c.campaign}</td>
-                    <td style={styles.td}>{money(c.amount, c.currency)}</td>
-                    <td style={styles.td}>{c.note || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <p style={styles.costHint}>לתיקון או מחיקה של שורת עלות, ערוך את לשונית CampaignCosts בגיליון.</p>
-      </div>
     </div>
   );
 }
@@ -1443,442 +731,8 @@ function BottomNavItem({ icon, label, active, onClick }) {
 }
 
 // ============ Dashboard ============
-// ============ Analytics ============
-// Stage-transition events and campaign costs both live in the Leads
-// spreadsheet and are fetched together from /crm/stats.
-
-// Events carry "DD/MM/YYYY HH:MM"; parseDMY only needs the date part.
-const parseStamp = (s) => parseDMY(String(s || "").split(" ")[0]);
-
-const RANGES = [
-  { id: "30", label: "30 יום" },
-  { id: "90", label: "90 יום" },
-  { id: "year", label: "השנה" },
-  { id: "all", label: "הכל" },
-];
-// Resolve a preset into concrete bounds. `null` on either side means unbounded.
-function rangeBounds(id, customFrom, customTo) {
-  if (id === "custom") {
-    return { from: parseDMY(customFrom) || null, to: parseDMY(customTo) || null };
-  }
-  if (id === "all") return { from: null, to: null };
-  const now = new Date();
-  if (id === "year") return { from: new Date(now.getFullYear(), 0, 1), to: null };
-  const days = Number(id) || 30;
-  const from = new Date();
-  from.setHours(0, 0, 0, 0);
-  from.setDate(from.getDate() - days);
-  return { from, to: null };
-}
-const inRange = (d, b) => {
-  if (!d) return false;
-  if (b.from && d < b.from) return false;
-  if (b.to) { const end = new Date(b.to); end.setHours(23, 59, 59, 999); if (d > end) return false; }
-  return true;
-};
-const money = (n, cur) => (cur === "USD" ? "$" : "₪") + Math.round(Number(n) || 0).toLocaleString("en-US");
-
-// Cost totals are kept per currency rather than summed blindly — mixing
-// shekels and dollars into one number would produce a confident wrong answer.
-function sumByCurrency(rows) {
-  const out = {};
-  rows.forEach((r) => {
-    const cur = String(r.currency || "ILS").toUpperCase() === "USD" ? "USD" : "ILS";
-    out[cur] = (out[cur] || 0) + (Number(r.amount) || 0);
-  });
-  return out;
-}
-const currencyList = (totals) => Object.keys(totals).filter((c) => totals[c] > 0);
-
-function RangePicker({ value, onChange, customFrom, customTo, onCustom }) {
-  return (
-    <div style={styles.rangeWrap}>
-      <div style={styles.rangeBtns}>
-        {RANGES.map((r) => (
-          <button key={r.id} onClick={() => onChange(r.id)} style={{
-            ...styles.rangeBtn,
-            background: value === r.id ? KAPPA.teal : "#fff",
-            color: value === r.id ? "#fff" : KAPPA.graphite,
-            borderColor: value === r.id ? KAPPA.teal : "#E2E8F0",
-          }}>{r.label}</button>
-        ))}
-        <button onClick={() => onChange("custom")} style={{
-          ...styles.rangeBtn,
-          background: value === "custom" ? KAPPA.teal : "#fff",
-          color: value === "custom" ? "#fff" : KAPPA.graphite,
-          borderColor: value === "custom" ? KAPPA.teal : "#E2E8F0",
-        }}>טווח מותאם</button>
-      </div>
-      {value === "custom" && (
-        // In RTL the first child renders rightmost, so "עד תאריך" is declared
-        // first to place it on the right and "מתאריך" on the left, as asked.
-        <div style={styles.rangeCustom}>
-          <div style={styles.rangeDateField}>
-            <DateField label="עד תאריך" value={customTo} onChange={(v) => onCustom(customFrom, v)} />
-          </div>
-          <div style={styles.rangeDateField}>
-            <DateField label="מתאריך" value={customFrom} onChange={(v) => onCustom(v, customTo)} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Horizontal bar for the statistics screens. Deliberately chunkier than the
-// overview-tab bars, which stay compact because they sit in a narrow card.
-function Bar({ label, count, max, color, suffix }) {
-  return (
-    <div style={styles.barRowLg}>
-      <span style={styles.barLabelLg} title={label}>{label}</span>
-      <div style={styles.barTrackLg}>
-        <div style={{ ...styles.barFillLg, width: `${max ? (count / max) * 100 : 0}%`, background: color }} />
-      </div>
-      <span style={styles.barCountLg}>{suffix != null ? suffix : count}</span>
-    </div>
-  );
-}
-
-// Ordered path a lead is expected to travel. "future" and "lost" sit outside
-// it: they are outcomes, not steps, so counting them as funnel stages would
-// distort the conversion rates.
-const FUNNEL_PATH = ["new", "contact", "meeting", "interested", "closed"];
-
-function FunnelTab({ events, bounds, leads }) {
-  const evs = events.filter((e) => inRange(parseStamp(e.changed_at), bounds));
-  // A lead can move into the same stage more than once; count distinct leads
-  // so a card dragged back and forth doesn't inflate the numbers.
-  const entered = {};
-  FUNNEL_PATH.concat(["future", "lost"]).forEach((s) => { entered[s] = new Set(); });
-  evs.forEach((e) => {
-    const to = String(e.to_stage || "").trim();
-    if (entered[to]) entered[to].add(String(e.lead_id || ""));
-  });
-  const counts = FUNNEL_PATH.map((id) => ({ ...stageOf(id), id, count: entered[id].size }));
-  const maxCount = Math.max(1, ...counts.map((c) => c.count));
-  const lostCount = entered.lost.size;
-  const futureCount = entered.future.size;
-
-  const steps = [];
-  for (let i = 1; i < counts.length; i++) {
-    const prev = counts[i - 1].count;
-    const cur = counts[i].count;
-    steps.push({
-      from: counts[i - 1].label,
-      to: counts[i].label,
-      rate: prev > 0 ? Math.round((cur / prev) * 100) : null,
-      cur, prev,
-    });
-  }
-
-  if (evs.length === 0) {
-    return (
-      <div style={styles.card}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>משפך והמרות</h3></div>
-        <div style={{ padding: "18px 4px", color: "#64748B", fontSize: 14, lineHeight: 1.9 }}>
-          <p style={{ margin: "0 0 10px" }}>אין עדיין מעברי שלבים בטווח שנבחר.</p>
-          <p style={{ margin: 0 }}>
-            תיעוד המעברים התחיל לפעול היום, ולכן המשפך מתמלא מכאן והלאה. כל שינוי סטטוס
-            שתעשה נרשם עם השלב הקודם, השלב החדש והתאריך. בעוד כמה ימים כבר יהיה כאן מה לנתח.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.statGrid} className="dash-grid">
-      <div style={styles.card}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>לידים שנכנסו לכל שלב</h3></div>
-        <div style={{ padding: "8px 4px" }}>
-          {counts.map((c) => <Bar key={c.id} label={c.label} count={c.count} max={maxCount} color={c.color} />)}
-          <div style={styles.statDivider} />
-          <Bar label="אולי בעתיד" count={futureCount} max={maxCount} color={stageOf("future").color} />
-          <Bar label="לא מעוניין" count={lostCount} max={maxCount} color={stageOf("lost").color} />
-        </div>
-      </div>
-      <div style={styles.card}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>שיעורי המרה בין שלבים</h3></div>
-        <div style={{ padding: "6px 4px" }}>
-          {steps.map((s, i) => (
-            <div key={i} style={styles.convRow}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={styles.convLabel}>{s.from} ← {s.to}</div>
-                <div style={styles.convMeta}>{s.cur} מתוך {s.prev}</div>
-              </div>
-              <div style={{ ...styles.convRate, color: s.rate == null ? "#94A3B8" : (s.rate >= 50 ? "#10B981" : s.rate >= 25 ? "#F59E0B" : "#EF4444") }}>
-                {s.rate == null ? "—" : s.rate + "%"}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CampaignsTab({ leads, costs, bounds, campaigns, onAddCost, session }) {
-  const [form, setForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
-  const [saving, setSaving] = useState(false);
-  const [open, setOpen] = useState(false);
-
-  const periodLeads = leads.filter((l) => inRange(parseDMY(l.created_at), bounds));
-  const periodCosts = costs.filter((c) => inRange(parseDMY(c.spend_date), bounds));
-
-  const names = Array.from(new Set(
-    periodLeads.map((l) => String(l.campaign || "").trim()).filter(Boolean)
-      .concat(periodCosts.map((c) => String(c.campaign || "").trim()).filter(Boolean))
-  ));
-
-  const rows = names.map((name) => {
-    const ls = periodLeads.filter((l) => String(l.campaign || "").trim() === name);
-    const cs = periodCosts.filter((c) => String(c.campaign || "").trim() === name);
-    const totals = sumByCurrency(cs);
-    const closed = ls.filter((l) => l.stage === "closed").length;
-    const interested = ls.filter((l) => l.stage === "interested" || l.stage === "closed").length;
-    return { name, leads: ls.length, closed, interested, totals };
-  }).sort((a, b) => b.leads - a.leads);
-
-  const maxLeads = Math.max(1, ...rows.map((r) => r.leads));
-  const grandTotals = sumByCurrency(periodCosts);
-  const grandCurrencies = currencyList(grandTotals);
-
-  const submit = async () => {
-    setSaving(true);
-    const ok = await onAddCost(form);
-    setSaving(false);
-    if (ok) { setForm({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" }); setOpen(false); }
-  };
-
-  // Cost per lead is only meaningful when there are both costs and leads;
-  // showing "₪0" or a division by zero would read as a real figure.
-  const perLead = (totals, n) => {
-    const curs = currencyList(totals);
-    if (!curs.length || !n) return "—";
-    return curs.map((c) => money(totals[c] / n, c)).join(" + ");
-  };
-  const totalText = (totals) => {
-    const curs = currencyList(totals);
-    return curs.length ? curs.map((c) => money(totals[c], c)).join(" + ") : "—";
-  };
-
-  return (
-    <div>
-      <div style={styles.kpiRow} className="kpi-row">
-        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים בתקופה" value={periodLeads.length} />
-        <Kpi icon={<Target size={20} />} tint="#8B5CF6" label="קמפיינים פעילים" value={rows.length} />
-        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="עלות בתקופה" value={grandCurrencies.length ? grandCurrencies.map((c) => money(grandTotals[c], c)).join(" + ") : "—"} />
-        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="סגרו בתקופה" value={periodLeads.filter((l) => l.stage === "closed").length} />
-      </div>
-
-      <div style={styles.card}>
-        <div style={styles.cardHead}>
-          <h3 style={styles.cardTitle}>ביצועים לפי קמפיין</h3>
-          <button style={styles.addCostBtn} onClick={() => setOpen((v) => !v)}>
-            <Plus size={15} /> תיעוד עלות
-          </button>
-        </div>
-
-        {open && (
-          <div style={styles.costForm}>
-            <div style={styles.costFormRow}>
-              <Field label="קמפיין">
-                <select style={styles.input} value={form.campaign} onChange={(e) => setForm({ ...form, campaign: e.target.value })}>
-                  <option value="">בחר קמפיין…</option>
-                  {campaigns.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </Field>
-              <DateField label="תאריך החיוב" value={form.spend_date} onChange={(v) => setForm({ ...form, spend_date: v })} />
-            </div>
-            <div style={styles.costFormRow}>
-              <Field label="סכום">
-                <input style={styles.input} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} dir="ltr" />
-              </Field>
-              <Field label="מטבע">
-                <select style={styles.input} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
-                  <option value="ILS">₪ שקל</option>
-                  <option value="USD">$ דולר</option>
-                </select>
-              </Field>
-            </div>
-            <Field label="הערה">
-              <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-            </Field>
-            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-              <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={submit}>
-                {saving ? "שומר…" : "שמור עלות"}
-              </button>
-              <button style={styles.cancelBtn} onClick={() => setOpen(false)}>ביטול</button>
-            </div>
-            <p style={styles.costHint}>
-              כל שורה היא חיוב בודד. אפשר להזין רטרואקטיבית כמה שורות לאותו קמפיין, אחת לכל חיוב, והסינון לפי זמן יסכום רק את מה שנופל בטווח.
-            </p>
-          </div>
-        )}
-
-        {rows.length === 0 ? (
-          <div style={{ padding: "18px 4px", color: "#64748B", fontSize: 14 }}>אין לידים או עלויות בטווח שנבחר.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={styles.statTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>קמפיין</th>
-                  <th style={styles.th}>לידים</th>
-                  <th style={styles.th}>מעוניינים</th>
-                  <th style={styles.th}>סגרו</th>
-                  <th style={styles.th}>עלות</th>
-                  <th style={styles.th}>עלות לליד</th>
-                  <th style={styles.th}>עלות לסגירה</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.name}>
-                    <td style={styles.tdName}>{r.name}</td>
-                    <td style={styles.td}>{r.leads}</td>
-                    <td style={styles.td}>{r.interested}</td>
-                    <td style={styles.td}>{r.closed}</td>
-                    <td style={styles.td}>{totalText(r.totals)}</td>
-                    <td style={styles.td}>{perLead(r.totals, r.leads)}</td>
-                    <td style={styles.td}>{perLead(r.totals, r.closed)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {rows.length > 0 && (
-        <div style={styles.card}>
-          <div style={styles.cardHead}><h3 style={styles.cardTitle}>לידים לפי קמפיין</h3></div>
-          <div style={{ padding: "8px 4px" }}>
-            {rows.map((r, i) => (
-              <Bar key={r.name} label={r.name} count={r.leads} max={maxLeads} color={CAMPAIGN_COLORS[i % CAMPAIGN_COLORS.length]} />
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-const CAMPAIGN_COLORS = ["#1FA9B8", "#8B5CF6", "#F59E0B", "#10B981", "#6366F1", "#EF4444", "#0EA5E9"];
-
-const ANALYTICS_TABS = [
-  { id: "overview", label: "סקירה כללית" },
-  { id: "funnel", label: "משפך והמרות" },
-  { id: "campaigns", label: "קמפיינים" },
-];
-
-function Analytics({ stats, leads, allLeads, onOpen, onFilterClick, session, flash }) {
-  const [tab, setTab] = useState("overview");
-  const [range, setRange] = useState("all");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
-  const [data, setData] = useState({ events: [], costs: [] });
-  const [state, setState] = useState("idle"); // idle | loading | ready | error
-
-  // Fetched lazily: the overview tab doesn't need it, and most sessions never
-  // leave the overview.
-  const load = useCallback(async () => {
-    setState("loading");
-    try {
-      const res = await fetch(API.stats);
-      if (!res.ok) throw new Error();
-      const d = await res.json();
-      setData({ events: d.events || [], costs: d.costs || [] });
-      setState("ready");
-    } catch {
-      setState("error");
-    }
-  }, []);
-  useEffect(() => {
-    if ((tab === "funnel" || tab === "campaigns") && state === "idle") load();
-  }, [tab, state, load]);
-
-  const addCost = async (form) => {
-    try {
-      const res = await fetch(API.costAdd, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, created_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      flash("העלות נשמרה");
-      await load();
-      return true;
-    } catch {
-      flash("שמירת העלות נכשלה — בדוק קמפיין, תאריך וסכום", "err");
-      return false;
-    }
-  };
-
-  const bounds = rangeBounds(range, customFrom, customTo);
-  const campaigns = Array.from(new Set(
-    allLeads.map((l) => String(l.campaign || "").trim()).filter(Boolean)
-  )).sort();
-
-  return (
-    <div>
-      <h1 style={styles.pageTitle}>סטטיסטיקות</h1>
-      <div style={styles.tabBar}>
-        {ANALYTICS_TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            ...styles.tabBtn,
-            color: tab === t.id ? KAPPA.tealDark : "#8695A8",
-            borderBottomColor: tab === t.id ? KAPPA.teal : "transparent",
-            fontWeight: tab === t.id ? 800 : 600,
-          }}>{t.label}</button>
-        ))}
-      </div>
-
-      {tab === "overview" && (
-        <>
-          <p style={styles.pageSub}>תמונת מצב של משפך המשקיעים</p>
-          <Dashboard stats={stats} leads={leads} onOpen={onOpen} onFilterClick={onFilterClick} />
-        </>
-      )}
-
-      {(tab === "funnel" || tab === "campaigns") && (
-        <>
-          <RangePicker value={range} onChange={setRange} customFrom={customFrom} customTo={customTo}
-            onCustom={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
-          {state === "loading" && (
-            <div style={styles.centerState}><RefreshCw size={26} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען נתונים…</p></div>
-          )}
-          {state === "error" && (
-            <div style={styles.centerState}>
-              <AlertCircle size={32} color="#EF4444" />
-              <p style={styles.stateText}>לא הצלחנו לטעון את הנתונים.</p>
-              <button style={styles.retryBtn} onClick={load}>נסה שוב</button>
-            </div>
-          )}
-          {state === "ready" && tab === "funnel" && <FunnelTab events={data.events} bounds={bounds} leads={leads} />}
-          {state === "ready" && tab === "campaigns" && (
-            <CampaignsTab leads={allLeads} costs={data.costs} bounds={bounds} campaigns={campaigns} onAddCost={addCost} session={session} />
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 function Dashboard({ stats, leads, onOpen, onFilterClick }) {
-  // Newest first. created_at is date-only, so leads added on the same day would
-  // tie; those fall back to sheet order, where a later row is the later entry.
-  const recent = leads
-    .map((l, i) => ({ l, i }))
-    .sort((a, b) => {
-      const da = parseDMY(a.l.created_at), db = parseDMY(b.l.created_at);
-      if (da && db && da.getTime() !== db.getTime()) return db.getTime() - da.getTime();
-      if (da && !db) return -1;
-      if (!da && db) return 1;
-      return b.i - a.i;
-    })
-    .slice(0, 6)
-    .map((x) => x.l);
+  const recent = leads.slice(0, 6);
   const byStage = STAGES.map((s) => ({ ...s, count: leads.filter((l) => l.stage === s.id).length }));
   const maxCount = Math.max(1, ...byStage.map((s) => s.count));
 
@@ -1894,6 +748,8 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
 
   return (
     <div>
+      <h1 style={styles.pageTitle}>סקירה כללית</h1>
+      <p style={styles.pageSub}>תמונת מצב של משפך המשקיעים</p>
       <div style={styles.kpiRow} className="kpi-row">
         <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים פעילים" value={stats.total} onClick={() => onFilterClick(FUNNEL_STAGES)} />
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="מעוניינים להשקיע" value={stats.interested} onClick={() => onFilterClick(["interested"])} />
@@ -1919,13 +775,13 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
             {recent.map((l) => {
               const st = stageOf(l.stage);
               return (
-                <button key={l.id} className="row-btn" style={styles.recentRowLg} onClick={() => onOpen(l)}>
-                  <div style={{ ...styles.avatarDash, background: st.soft, color: st.color }}>{initials(l.name)}</div>
+                <button key={l.id} className="row-btn" style={styles.recentRow} onClick={() => onOpen(l)}>
+                  <div style={{ ...styles.avatar, background: st.soft, color: st.color }}>{initials(l.name)}</div>
                   <div style={{ flex: 1, textAlign: "right" }}>
-                    <div style={styles.recentNameLg}>{l.name}</div>
-                    <div style={styles.recentMetaLg}>{l.campaign} · {fmtMoney(l.amount)}</div>
+                    <div style={styles.recentName}>{l.name}</div>
+                    <div style={styles.recentMeta}>{l.campaign} · {fmtMoney(l.amount)}</div>
                   </div>
-                  <span style={{ ...styles.chipLg, background: st.soft, color: st.color }}>{st.label}</span>
+                  <span style={{ ...styles.chip, background: st.soft, color: st.color }}>{st.label}</span>
                   <ChevronLeft size={16} color="#CBD5E1" />
                 </button>
               );
@@ -1962,13 +818,13 @@ function CallList({ title, tint, icon, items, emptyText, onOpen }) {
           const days = Math.round((date - startOfToday()) / 86400000);
           const when = days === 0 ? "היום" : days < 0 ? `לפני ${Math.abs(days)} ימים` : `בעוד ${days} ימים`;
           return (
-            <button key={lead.id} className="row-btn" style={styles.recentRowLg} onClick={() => onOpen(lead)}>
-              <div style={{ ...styles.avatarDash, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
+            <button key={lead.id} className="row-btn" style={styles.recentRow} onClick={() => onOpen(lead)}>
+              <div style={{ ...styles.avatar, background: st.soft, color: st.color }}>{initials(lead.name)}</div>
               <div style={{ flex: 1, textAlign: "right" }}>
-                <div style={styles.recentNameLg}>{lead.name}</div>
-                <div style={styles.recentMetaLg}>{lead.next_call} · {st.label}</div>
+                <div style={styles.recentName}>{lead.name}</div>
+                <div style={styles.recentMeta}>{lead.next_call} · {st.label}</div>
               </div>
-              <span style={{ ...styles.chipLg, background: tint === "#EF4444" ? "#FEF2F2" : KAPPA.tealSoft, color: tint }}>{when}</span>
+              <span style={{ ...styles.chip, background: tint === "#EF4444" ? "#FEF2F2" : KAPPA.tealSoft, color: tint }}>{when}</span>
               <ChevronLeft size={16} color="#CBD5E1" />
             </button>
           );
@@ -2549,6 +1405,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
   const [f, setF] = useState(lead);
   const [invRows, setInvRows] = useState(() => parseInvestments(lead));
   const [saving, setSaving] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const drawerStyle = { ...styles.drawer, ...(maximized ? styles.drawerMax : {}) };
   const drawerClass = `lead-drawer${maximized ? " lead-drawer-max" : ""}`;
   const MaximizeBtn = () => (!isMobile ? (
@@ -2561,8 +1418,28 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
   const isLost = lead.stage === "lost";
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
 
+  // True once anything in the edit form differs from the stored lead — used to
+  // guard against losing work on a stray click outside the drawer or an Esc.
+  const dirty = useMemo(
+    () => JSON.stringify(f) !== JSON.stringify(lead) ||
+          JSON.stringify(invRows) !== JSON.stringify(parseInvestments(lead)),
+    [f, invRows, lead]
+  );
+
   const startEdit = () => { setF(lead); setInvRows(parseInvestments(lead)); setEditing(true); };
-  const cancel = () => { setEditing(false); setF(lead); setInvRows(parseInvestments(lead)); };
+  const cancel = () => { setConfirmDiscard(false); setEditing(false); setF(lead); setInvRows(parseInvestments(lead)); };
+  const requestCancel = () => { if (dirty) setConfirmDiscard(true); else cancel(); };
+
+  // Esc closes the drawer / leaves edit mode (with the same discard guard).
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (confirmDiscard) { setConfirmDiscard(false); return; }
+      if (editing) requestCancel(); else onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   const save = async () => {
     setSaving(true);
     // Clean the investment rows (drop empty ones) and derive the aggregate fields
@@ -2586,11 +1463,11 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
   // ---------- EDIT MODE ----------
   if (editing) {
     return (
-      <div style={styles.overlay} onClick={cancel}>
-        <div style={drawerStyle} className={drawerClass} onClick={(e) => e.stopPropagation()}>
+      <div style={styles.overlay} onClick={requestCancel}>
+        <div style={drawerStyle} className={drawerClass} role="dialog" aria-modal="true" aria-label="עריכת ליד" onClick={(e) => e.stopPropagation()}>
           <div style={styles.drawerHead}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <button style={styles.iconBtn} onClick={cancel}><X size={20} /></button>
+              <button style={styles.iconBtn} onClick={requestCancel} aria-label="סגור"><X size={20} /></button>
               <MaximizeBtn />
             </div>
             <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>עריכת ליד</h3>
@@ -2648,6 +1525,20 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
               </>
             )}
           </div>
+          {confirmDiscard && (
+            <div style={styles.confirmOverlay} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(false); }}>
+              <div style={styles.confirmBox} onClick={(e) => e.stopPropagation()}>
+                <div style={{ ...styles.confirmIcon, background: "#FEF3C7" }}><AlertCircle size={26} color="#F59E0B" /></div>
+                <h3 style={styles.confirmTitle}>לצאת בלי לשמור?</h3>
+                <p style={styles.confirmText}>יש שינויים שלא נשמרו בכרטיס הליד. אם תצא עכשיו הם יאבדו.</p>
+                <div style={styles.confirmBtns}>
+                  <button style={styles.confirmPrimary} onClick={() => { setConfirmDiscard(false); save(); }}>שמור וסגור</button>
+                  <button style={{ ...styles.confirmSecondary, color: "#EF4444" }} onClick={cancel}>צא בלי לשמור</button>
+                </div>
+                <button style={styles.confirmCancel} onClick={() => setConfirmDiscard(false)}>המשך לערוך</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2656,10 +1547,10 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
   // ---------- VIEW MODE ----------
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={drawerStyle} className={drawerClass} onClick={(e) => e.stopPropagation()}>
+      <div style={drawerStyle} className={drawerClass} role="dialog" aria-modal="true" aria-label={`כרטיס ליד — ${lead.name}`} onClick={(e) => e.stopPropagation()}>
         <div style={styles.drawerHead}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
+            <button style={styles.iconBtn} onClick={onClose} aria-label="סגור"><X size={20} /></button>
             <MaximizeBtn />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2914,13 +1805,17 @@ function MeetingAISummary({ lead, onSave }) {
 
 // ============ Add ============
 function AddLead({ onClose, onSave }) {
-  const { active: activeCampaigns } = useCampaigns();
   const [f, setF] = useState({
-    name: "", phone: "", email: "", campaign: activeCampaigns[0] || "", referrer: "",
+    name: "", phone: "", email: "", campaign: CAMPAIGNS[0], referrer: "",
     stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
   });
   const [invRows, setInvRows] = useState([{ track: "", amount: "", compound: false }]);
   const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const valid = f.name.trim().length > 0;
   const submit = async () => {
@@ -2943,9 +1838,9 @@ function AddLead({ onClose, onSave }) {
   };
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.drawer} className="lead-drawer" onClick={(e) => e.stopPropagation()}>
+      <div style={styles.drawer} className="lead-drawer" role="dialog" aria-modal="true" aria-label="ליד חדש" onClick={(e) => e.stopPropagation()}>
         <div style={styles.drawerHead}>
-          <button style={styles.iconBtn} onClick={onClose}><X size={20} /></button>
+          <button style={styles.iconBtn} onClick={onClose} aria-label="סגור"><X size={20} /></button>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: KAPPA.ink }}>ליד חדש</h3>
         </div>
         <div style={styles.drawerBody} className="drawer-body">
@@ -3042,28 +1937,22 @@ function DateField({ label, value, onChange }) {
 // stored value — so reporting downstream sees the real campaign name, not
 // a generic "אחר".
 function CampaignField({ value, onChange }) {
-  const { active, all } = useCampaigns();
-  // A lead may already carry a campaign that has since been deactivated.
-  // Hiding it would silently rewrite that lead's campaign on the next save,
-  // so a deactivated campaign still in use stays selectable on that lead.
-  const known = active.slice();
-  if (value && all.includes(value) && !known.includes(value)) known.push(value);
-  const isOther = !!value && !known.includes(value);
-  const options = known.concat([OTHER]);
+  const KNOWN = CAMPAIGNS.filter((c) => c !== "אחר");
+  const isOther = !!value && !KNOWN.includes(value);
   return (
     <Field label="קמפיין">
       <select
         style={styles.input}
-        value={isOther ? OTHER : (value || "")}
-        onChange={(e) => { const v = e.target.value; onChange(v === OTHER ? OTHER : v); }}
+        value={isOther ? "אחר" : (value || "")}
+        onChange={(e) => { const v = e.target.value; onChange(v === "אחר" ? "אחר" : v); }}
       >
         {!value && <option value="" disabled hidden />}
-        {options.map((c) => <option key={c} value={c}>{c}</option>)}
+        {CAMPAIGNS.map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
       {isOther && (
         <input
           style={{ ...styles.input, marginTop: 8 }}
-          value={value === OTHER ? "" : value}
+          value={value === "אחר" ? "" : value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="פרט…"
         />
@@ -3074,6 +1963,7 @@ function CampaignField({ value, onChange }) {
 
 // ============ CSS ============
 const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap');
   * { box-sizing: border-box; }
   html, body { margin:0; overflow-x: hidden; max-width: 100%; }
   .nav-item:hover { background: rgba(255,255,255,0.06) !important; }
@@ -3089,8 +1979,6 @@ const css = `
   .spin { animation: spin 1s linear infinite; }
   @keyframes slideIn { from { transform: translateX(-30px); opacity:0 } to { transform:translateX(0); opacity:1 } }
   @keyframes toastIn { from { transform: translateY(20px); opacity:0 } to { transform:translateY(0); opacity:1 } }
-  .cost-form-lg label { font-size: 15.5px !important; margin-bottom: 8px !important; }
-  .cost-form-lg input, .cost-form-lg select { font-size: 17px !important; padding: 13px 16px !important; }
   .drawer-grid-2col { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 0 40px; }
   .drawer-grid-2col > div { min-width: 0; }
   @media (max-width: 900px) { .drawer-grid-2col { grid-template-columns: 1fr; } }
@@ -3152,77 +2040,27 @@ const styles = {
   loginLoadingText: { fontSize: 13, color: "#94A3B8" },
   loginError: { marginTop: 18, background: "#FEF2F2", color: "#EF4444", fontSize: 13, fontWeight: 600, borderRadius: 9, padding: "10px 14px", lineHeight: 1.5 },
   content: { flex: 1, overflowY: "auto", padding: "28px 30px" },
-  pageTitle: { fontSize: 30, fontWeight: 800, margin: "0 0 6px", color: KAPPA.ink },
-  pageSub: { fontSize: 16, color: "#8695A8", margin: "0 0 26px" },
-  tabBar: { display: "flex", gap: 4, borderBottom: "1px solid #E8EDF2", margin: "6px 0 20px", overflowX: "auto" },
-  tabBtn: { background: "none", border: "none", borderBottom: "3px solid transparent", padding: "13px 20px", fontSize: 17, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap", marginBottom: -1 },
-  rangeWrap: { marginBottom: 18 },
-  rangeBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
-  rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
-  rangeCustom: { display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap", alignItems: "flex-end" },
-  rangeDateField: { flex: "0 1 240px", minWidth: 190 },
-  statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" },
-  statDivider: { height: 1, background: "#F1F5F9", margin: "12px 0" },
-  convRow: { display: "flex", alignItems: "center", gap: 14, padding: "15px 4px", borderBottom: "1px solid #F8FAFC" },
-  convLabel: { fontSize: 16, fontWeight: 700, color: KAPPA.ink },
-  convMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 3 },
-  convRate: { fontSize: 24, fontWeight: 800, flexShrink: 0 },
-  statTable: { width: "100%", borderCollapse: "collapse", fontFamily: FONT },
-  th: { textAlign: "right", fontSize: 15.5, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
-  thCenter: { textAlign: "center", fontSize: 15.5, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
-  td: { textAlign: "right", fontSize: 17, color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
-  tdCenter: { textAlign: "center", fontSize: 17, color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
-  tdName: { textAlign: "right", fontSize: 17, fontWeight: 700, color: KAPPA.ink, padding: "17px 16px", borderBottom: "1px solid #F8FAFC" },
-  addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
-  costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 12, padding: "20px 22px", margin: "6px 26px 18px" },
-  costGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 250px))", gap: "0 16px", justifyContent: "start" },
-  costNoteCell: { maxWidth: 516 },
-  costSaveBtn: { width: "auto", padding: "13px 34px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 14 },
-  costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
-  costHint: { fontSize: 14, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
-  addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 26px 18px", maxWidth: 520 },
-  addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "13px 16px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 16, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
-  addCampaignBtn: { flexShrink: 0, width: "auto", padding: "13px 28px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
-  campRow: { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", borderBottom: "1px solid #F8FAFC" },
-  campName: { background: "none", border: "none", padding: 0, fontSize: 17.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
-  campMeta: { fontSize: 14, color: "#94A3B8", marginTop: 4 },
-  campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
-  statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 15px", borderRadius: 20, fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" },
-  statusDot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 },
-  backBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "none", color: KAPPA.tealDark, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: "4px 0", marginBottom: 10 },
-  detailHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" },
-  detailActions: { display: "flex", gap: 10, flexShrink: 0 },
-  rowActions: { display: "inline-flex", gap: 8, justifyContent: "center" },
+  pageTitle: { fontSize: 25, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
+  pageSub: { fontSize: 14, color: "#8695A8", margin: "0 0 24px" },
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 },
-  kpi: { background: "#fff", borderRadius: 16, padding: "24px 26px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
-  kpiIcon: { width: 50, height: 50, borderRadius: 13, display: "grid", placeItems: "center", marginBottom: 16 },
-  kpiValue: { fontSize: 32, fontWeight: 800, color: KAPPA.ink, lineHeight: 1.15, wordBreak: "break-word" },
-  kpiValueText: { fontSize: 21, fontWeight: 800, lineHeight: 1.3, display: "inline-block" },
-  kpiLabel: { fontSize: 15, color: "#8695A8", marginTop: 8, fontWeight: 500 },
+  kpi: { background: "#fff", borderRadius: 15, padding: "20px 22px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
+  kpiIcon: { width: 42, height: 42, borderRadius: 11, display: "grid", placeItems: "center", marginBottom: 14 },
+  kpiValue: { fontSize: 26, fontWeight: 800, color: KAPPA.ink, lineHeight: 1 },
+  kpiLabel: { fontSize: 13, color: "#8695A8", marginTop: 6, fontWeight: 500 },
   dashGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 },
   card: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
-  cardHead: { padding: "22px 26px 14px" },
-  cardTitle: { fontSize: 19, fontWeight: 700, margin: 0, color: KAPPA.ink },
-  barRow: { display: "flex", alignItems: "center", gap: 14, padding: "12px 26px" },
-  barLabel: { fontSize: 15.5, color: KAPPA.graphite, width: 118, flexShrink: 0, fontWeight: 600 },
-  barTrack: { flex: 1, height: 13, background: "#F1F5F9", borderRadius: 7, overflow: "hidden" },
+  cardHead: { padding: "18px 22px 12px" },
+  cardTitle: { fontSize: 16, fontWeight: 700, margin: 0, color: KAPPA.ink },
+  barRow: { display: "flex", alignItems: "center", gap: 12, padding: "9px 22px" },
+  barLabel: { fontSize: 13.5, color: KAPPA.graphite, width: 96, flexShrink: 0, fontWeight: 500 },
+  barTrack: { flex: 1, height: 9, background: "#F1F5F9", borderRadius: 6, overflow: "hidden" },
   barFill: { height: "100%", borderRadius: 6, transition: "width .4s" },
-  barCount: { fontSize: 16, fontWeight: 800, color: KAPPA.ink, minWidth: 28, textAlign: "left" },
-  barRowLg: { display: "flex", alignItems: "center", gap: 16, padding: "13px 22px" },
-  barLabelLg: { fontSize: 15.5, color: KAPPA.graphite, width: 150, flexShrink: 0, fontWeight: 600 },
-  barTrackLg: { flex: 1, height: 15, background: "#F1F5F9", borderRadius: 8, overflow: "hidden" },
-  barFillLg: { height: "100%", borderRadius: 8, transition: "width .4s" },
-  barCountLg: { fontSize: 16, fontWeight: 800, color: KAPPA.ink, minWidth: 34, textAlign: "left" },
+  barCount: { fontSize: 13, fontWeight: 700, color: KAPPA.ink, width: 22, textAlign: "left" },
   recentRow: { width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 22px", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", cursor: "pointer", fontFamily: FONT, transition: "background .12s" },
   avatar: { width: 38, height: 38, borderRadius: 10, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 13.5, flexShrink: 0 },
   recentName: { fontSize: 14, fontWeight: 600, color: KAPPA.ink },
   recentMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 2 },
   chip: { fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap" },
-  recentRowLg: { width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "16px 26px", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", cursor: "pointer", fontFamily: FONT, transition: "background .12s" },
-  avatarDash: { width: 46, height: 46, borderRadius: 12, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 },
-  recentNameLg: { fontSize: 16.5, fontWeight: 600, color: KAPPA.ink },
-  recentMetaLg: { fontSize: 14, color: "#94A3B8", marginTop: 3 },
-  chipLg: { fontSize: 13.5, fontWeight: 700, padding: "6px 14px", borderRadius: 20, whiteSpace: "nowrap" },
   board: { display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", paddingBottom: 10 },
   pipeHead: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 12 },
   pipeHeadMain: { display: "flex", alignItems: "flex-start", gap: 18, flexWrap: "wrap", flex: 1, minWidth: 0 },
@@ -3347,14 +2185,6 @@ const styles = {
   promoHead: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: KAPPA.tealDark, marginBottom: 18 },
   stageSwitch: { marginTop: 4 },
   dangerZone: { marginTop: 22, paddingTop: 16, borderTop: "1px solid #F1F5F9", display: "flex", justifyContent: "flex-start" },
-  binBox: { width: 560, maxWidth: "94vw", maxHeight: "82vh", background: "#fff", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.18)" },
-  binHead: { display: "flex", alignItems: "center", justifyContent: "space-between", flexDirection: "row-reverse", padding: "14px 18px", borderBottom: "1px solid #F1F5F9" },
-  binBody: { padding: "10px 18px 18px", overflowY: "auto" },
-  binRow: { display: "flex", alignItems: "center", gap: 12, padding: "12px 2px", borderBottom: "1px solid #F8FAFC" },
-  binName: { fontSize: 14.5, fontWeight: 700, color: KAPPA.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  binMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
-  binReason: { fontSize: 12.5, color: "#64748B", marginTop: 2 },
-  restoreBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   deleteBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: "#FEF2F2", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 9, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   switchLabel: { fontSize: 13, fontWeight: 600, color: KAPPA.graphite, marginBottom: 10 },
   switchBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
