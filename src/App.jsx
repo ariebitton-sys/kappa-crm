@@ -166,6 +166,29 @@ const DATE_FILTER_FIELDS = [
   { id: "next_call", label: "מועד שיחה הבאה" },
 ];
 
+// ---- Tasks ----------------------------------------------------------------
+// Tasks live on the lead itself as a JSON array in a "tasks" column, so they
+// ride the existing update webhook — no new endpoint, and a task can never be
+// orphaned from its lead. next_call stays as the single "next touch" date; a
+// task is anything with an owner and a due date.
+const TASK_TYPES = [
+  { id: "call", label: "שיחה" },
+  { id: "email", label: "מייל" },
+  { id: "meeting", label: "פגישה" },
+  { id: "doc", label: "מסמכים" },
+  { id: "other", label: "אחר" },
+];
+const taskTypeLabel = (id) => (TASK_TYPES.find((t) => t.id === id) || TASK_TYPES[4]).label;
+function parseTasks(lead) {
+  let raw = lead && lead.tasks;
+  if (typeof raw === "string" && raw.trim()) {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
+  return Array.isArray(raw) ? raw.filter((t) => t && t.title) : [];
+}
+const openTasks = (lead) => parseTasks(lead).filter((t) => !t.done);
+const newTaskId = () => "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
 const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "העברה בנקאית", "גישה לאגורה", "פרטי תשלום ראשון"];
 
 // Fallback campaign list. Campaigns now live in the Campaigns tab of the sheet
@@ -185,6 +208,29 @@ function useCampaigns() {
   if (v) return v;
   return { rows: [], all: CAMPAIGNS_FALLBACK, active: CAMPAIGNS_FALLBACK, reload: () => {}, save: async () => false, state: "idle" };
 }
+// Events + campaign costs are one payload (/crm/stats) consumed by three
+// screens (statistics, campaign management, a lead's stage history). One
+// provider fetches it once and hands the same data to all of them.
+const StatsCtx = React.createContext(null);
+function useStats() {
+  const v = React.useContext(StatsCtx);
+  return v || { events: [], costs: [], state: "idle", ensure: () => {}, reload: async () => {}, fx: DEFAULT_FX, setFx: () => {} };
+}
+
+// Costs are recorded in shekels and dollars. Keeping them apart produces
+// "₪12,000 + $400" — a figure nobody can rank or compare — so a single stored
+// rate converts everything into one display currency, with the raw split kept
+// as the tooltip.
+const FX_KEY = "kappa_fx";
+const DEFAULT_FX = { usdIls: 3.7, display: "ILS" };
+function loadFx() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FX_KEY) || "null");
+    if (raw && Number(raw.usdIls) > 0) return { usdIls: Number(raw.usdIls), display: raw.display === "USD" ? "USD" : "ILS" };
+  } catch {}
+  return DEFAULT_FX;
+}
+
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
 // Tracks that support compound interest (ריבית דריבית). Only these show the toggle.
 const COMPOUND_TRACKS = ["Multi Single", "Brick Capital"];
@@ -368,7 +414,7 @@ export default function App() {
     const apply = () => {
       const p = new URLSearchParams(window.location.search);
       const v = p.get("view");
-      if (["dashboard", "pipeline", "campaigns", "journey"].includes(v)) setView(v);
+      if (["dashboard", "pipeline", "tasks", "campaigns", "journey"].includes(v)) setView(v);
     };
     apply();
     window.addEventListener("popstate", apply);
@@ -417,6 +463,41 @@ export default function App() {
     const active = usable ? campaignRows.filter((c) => c.active).map((c) => c.name) : CAMPAIGNS_FALLBACK;
     return { rows: campaignRows, all, active, reload: loadCampaigns, save: saveCampaign, state: campaignState };
   }, [campaignRows, campaignState, loadCampaigns]);
+
+  // ---- Stats (events + costs), fetched once and shared ----
+  const [statsData, setStatsData] = useState({ events: [], costs: [] });
+  const [statsState, setStatsState] = useState("idle");
+  const statsAsked = useRef(false);
+  const loadStats = useCallback(async () => {
+    setStatsState("loading");
+    try {
+      const res = await fetch(API.stats);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      setStatsData({ events: d.events || [], costs: Array.isArray(d.costs) ? d.costs : [] });
+      setStatsState("ready");
+    } catch {
+      setStatsState("error");
+    }
+  }, []);
+  const ensureStats = useCallback(() => {
+    if (statsAsked.current) return;
+    statsAsked.current = true;
+    loadStats();
+  }, [loadStats]);
+  const reloadStats = useCallback(async () => { statsAsked.current = true; await loadStats(); }, [loadStats]);
+  const [fx, setFxState] = useState(loadFx);
+  const setFx = useCallback((patch) => {
+    setFxState((prev) => {
+      const next = { ...prev, ...patch };
+      try { localStorage.setItem(FX_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+  const statsValue = useMemo(
+    () => ({ events: statsData.events, costs: statsData.costs, state: statsState, ensure: ensureStats, reload: reloadStats, fx, setFx }),
+    [statsData, statsState, ensureStats, reloadStats, fx, setFx]
+  );
 
   const loadLeads = useCallback(async (silent = false) => {
     if (silent !== true) setStatus("loading");
@@ -725,6 +806,30 @@ export default function App() {
     }
   };
 
+  // Tasks are stored on the lead, so every mutation is an ordinary lead update.
+  const saveTasks = (lead, tasks) => updateLead({ ...lead, tasks: JSON.stringify(tasks) });
+  const toggleTask = (lead, taskId) =>
+    saveTasks(lead, parseTasks(lead).map((t) => (t.id === taskId
+      ? { ...t, done: !t.done, done_at: !t.done ? todayStr() : "" } : t)));
+  const snoozeTask = (lead, taskId, days = 1) =>
+    saveTasks(lead, parseTasks(lead).map((t) => {
+      if (t.id !== taskId) return t;
+      const base = parseDMY(t.due) || startOfToday();
+      base.setDate(base.getDate() + days);
+      return { ...t, due: fmtDMY(base) };
+    }));
+
+  // Everyone who already owns a lead or a task, plus whoever is signed in.
+  const owners = useMemo(() => {
+    const set = new Set();
+    leads.forEach((l) => {
+      if (l.owner) set.add(String(l.owner));
+      parseTasks(l).forEach((t) => { if (t.owner) set.add(String(t.owner)); });
+    });
+    set.add(session && session.email ? session.email : "");
+    return Array.from(set).filter(Boolean).sort();
+  }, [leads, session]);
+
   // One-click follow-up housekeeping from a card / table row, so the two most
   // common edits don't require opening the drawer.
   const snoozeCall = (lead, days = 1) => {
@@ -740,6 +845,7 @@ export default function App() {
 
   return (
     <CampaignsCtx.Provider value={campaignsValue}>
+    <StatsCtx.Provider value={statsValue}>
     <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
 
@@ -751,6 +857,7 @@ export default function App() {
           <nav style={styles.nav}>
             <NavItem icon={<LayoutDashboard size={19} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
+            <NavItem icon={<CalendarClock size={19} />} label="משימות" active={view === "tasks"} onClick={() => setView("tasks")} />
             <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
@@ -793,6 +900,9 @@ export default function App() {
           {status === "ready" && view === "pipeline" && (
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
           )}
+          {status === "ready" && view === "tasks" && (
+            <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} />
+          )}
           {status === "ready" && view === "campaigns" && (
             <CampaignsAdmin leads={leads} session={session} flash={flash} onRenameLeads={renameCampaignOnLeads} />
           )}
@@ -808,6 +918,7 @@ export default function App() {
           <nav style={styles.bottomNav}>
             <BottomNavItem icon={<LayoutDashboard size={22} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <BottomNavItem icon={<Users size={22} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
+            <BottomNavItem icon={<CalendarClock size={22} />} label="משימות" active={view === "tasks"} onClick={() => setView("tasks")} />
             <BottomNavItem icon={<Megaphone size={22} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <BottomNavItem icon={<Target size={22} />} label="ליווי" active={view === "journey"} onClick={() => setView("journey")} />
           </nav>
@@ -817,9 +928,10 @@ export default function App() {
       {selected && (
         <LeadDrawer lead={selected} onClose={() => setSelected(null)}
           onMove={(s) => moveLead(selected.id, s)} onSave={updateLead}
-          onRequestDelete={() => setConfirmDelete(selected)} />
+          onRequestDelete={() => setConfirmDelete(selected)}
+          session={session} owners={owners} onSaveTasks={saveTasks} />
       )}
-      {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} leads={leads} />}
+      {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} leads={leads} session={session} owners={owners} />}
 
       {journeyPrompt && (
         <div style={styles.confirmOverlay} onClick={() => setJourneyPrompt(null)}>
@@ -861,6 +973,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </StatsCtx.Provider>
     </CampaignsCtx.Provider>
   );
 }
@@ -1010,6 +1123,7 @@ function ErrorState({ onRetry }) {
 // compares to the leads it brought in. The cost ledger here is editable, since
 // charges are often entered retroactively and need correcting.
 function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost, onDeleteCost, onRename, onToggle, busy, reloadCosts }) {
+  const { fx } = useStats();
   const [range, setRange] = useState("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -1040,11 +1154,11 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
     String(l.campaign || "").trim() === campaign.name && inRange(parseDMY(l.created_at), bounds));
 
   const totals = sumByCurrency(inPeriod);
-  const curs = currencyList(totals);
-  const totalText = curs.length ? curs.map((c) => money(totals[c], c)).join(" + ") : "—";
-  const perLead = (curs.length && periodLeads.length)
-    ? curs.map((c) => money(totals[c] / periodLeads.length, c)).join(" + ")
+  const totalText = hasCost(totals) ? fxMoney(totalIn(totals, fx), fx) : "—";
+  const perLead = (hasCost(totals) && periodLeads.length)
+    ? fxMoney(totalIn(totals, fx) / periodLeads.length, fx)
     : "—";
+  const split = fxBreakdown(totals);
   const closed = periodLeads.filter((l) => l.stage === "closed").length;
 
   const sorted = inPeriod.slice().sort((a, b) => {
@@ -1118,7 +1232,7 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
         onCustom={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
 
       <div style={styles.kpiRow} className="kpi-row">
-        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="סה״כ הושקע" value={<span style={styles.kpiValueText}>{totalText}</span>} />
+        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="סה״כ הושקע" value={<span style={styles.kpiValueText} title={split}>{totalText}</span>} />
         <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים בתקופה" value={periodLeads.length} />
         <Kpi icon={<TrendingUp size={20} />} tint="#8B5CF6" label="עלות לליד" value={<span style={styles.kpiValueText}>{perLead}</span>} />
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="סגרו בתקופה" value={closed} />
@@ -1234,25 +1348,9 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState("");
 
-  const [costs, setCosts] = useState([]);
-  const [costState, setCostState] = useState("idle");
-  const [costForm, setCostForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
-  const [costSaving, setCostSaving] = useState(false);
+  const { costs, state: costState, ensure: ensureStats, reload: loadCosts, fx, setFx } = useStats();
+  useEffect(() => { ensureStats(); }, [ensureStats]);
   const [openId, setOpenId] = useState(null); // campaign being drilled into
-
-  const loadCosts = useCallback(async () => {
-    setCostState("loading");
-    try {
-      const res = await fetch(API.stats);
-      if (!res.ok) throw new Error();
-      const d = await res.json();
-      setCosts(Array.isArray(d.costs) ? d.costs : []);
-      setCostState("ready");
-    } catch {
-      setCostState("error");
-    }
-  }, []);
-  useEffect(() => { loadCosts(); }, [loadCosts]);
 
   // Lead counts decide whether a campaign can be removed outright: deleting one
   // that leads still reference would leave those leads pointing at a campaign
@@ -1281,30 +1379,6 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
     flash(ok ? (row.active ? "הקמפיין הושבת" : "הקמפיין הופעל") : "העדכון נכשל", ok ? "ok" : "err");
   };
 
-  const submitCost = async () => {
-    setCostSaving(true);
-    try {
-      const res = await fetch(API.costAdd, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...costForm, created_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      flash("העלות נשמרה");
-      setCostForm({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
-      await loadCosts();
-    } catch {
-      flash("שמירת העלות נכשלה — בדוק קמפיין, תאריך וסכום", "err");
-    }
-    setCostSaving(false);
-  };
-
-  const sortedCosts = costs.slice().sort((a, b) => {
-    const da = parseDMY(a.spend_date), db = parseDMY(b.spend_date);
-    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-  });
-
   // ---- header figures ----
   const now = new Date();
   const leadsThisMonth = leads.filter((l) => {
@@ -1318,10 +1392,9 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
   // campaign was never paid for through one. Currencies stay separate.
   const attributedLeads = leads.filter((l) => String(l.campaign || "").trim() !== "").length;
   const costTotals = sumByCurrency(costs);
-  const costCurrencies = currencyList(costTotals);
-  const avgCostPerLead = (!costCurrencies.length || !attributedLeads)
+  const avgCostPerLead = (!hasCost(costTotals) || !attributedLeads)
     ? "—"
-    : costCurrencies.map((c) => money(costTotals[c] / attributedLeads, c)).join(" + ");
+    : fxMoney(totalIn(costTotals, fx) / attributedLeads, fx);
 
   // Used by the drill-down view. Sending a cost_id updates that ledger row;
   // omitting it creates a new charge.
@@ -1491,78 +1564,32 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
           <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין קמפיינים. הוסף אחד למעלה.</div>
         )}
         <p style={styles.costHint}>
-          לחיצה על שם קמפיין פותחת אותו, עם היסטוריית החיובים וסך ההשקעה. השבתה מסתירה את
+          כל תיעוד העלויות נעשה בתוך כרטיס הקמפיין — לחיצה על שם קמפיין פותחת אותו, עם
+          היסטוריית החיובים וסך ההשקעה. השבתה מסתירה את
           הקמפיין מטופס ליד חדש, אבל משאירה אותו על לידים קיימים ובסטטיסטיקות, כך
           שהיסטוריה לא הולכת לאיבוד.
         </p>
       </div>
 
       <div style={{ ...styles.card, marginTop: 24 }}>
-        <div style={styles.cardHead}><h3 style={styles.cardTitle}>תיעוד עלויות</h3></div>
-        <div style={styles.costForm} className="cost-form-lg">
-          <div style={styles.costGrid}>
-            <Field label="קמפיין">
-              <select style={styles.input} value={costForm.campaign} onChange={(e) => setCostForm({ ...costForm, campaign: e.target.value })}>
-                <option value="">בחר קמפיין…</option>
-                {rows.map((r) => <option key={r.campaign_id} value={r.name}>{r.name}</option>)}
-              </select>
-            </Field>
-            <DateField label="תאריך החיוב" value={costForm.spend_date} onChange={(v) => setCostForm({ ...costForm, spend_date: v })} />
-            <Field label="סכום">
-              <input style={styles.input} value={costForm.amount} onChange={(e) => setCostForm({ ...costForm, amount: e.target.value })} dir="ltr" />
-            </Field>
-            <Field label="מטבע">
-              <select style={styles.input} value={costForm.currency} onChange={(e) => setCostForm({ ...costForm, currency: e.target.value })}>
-                <option value="ILS">₪ שקל</option>
-                <option value="USD">$ דולר</option>
-              </select>
-            </Field>
-          </div>
-          <div style={styles.costNoteCell}>
-            <Field label="הערה">
-              <input style={styles.input} value={costForm.note} onChange={(e) => setCostForm({ ...costForm, note: e.target.value })} placeholder="למשל: חיוב חודש אוגוסט" />
-            </Field>
-          </div>
-          <button style={{ ...styles.costSaveBtn, opacity: costSaving ? 0.5 : 1 }} disabled={costSaving} onClick={submitCost}>
-            {costSaving ? "שומר…" : "שמור עלות"}
-          </button>
-          <p style={styles.costHint}>
-            כל שורה היא חיוב בודד עם תאריך. אפשר להזין רטרואקטיבית שורה לכל חיוב, והסינון
-            לפי זמן במסך הסטטיסטיקות יסכום רק את מה שנופל בטווח שנבחר.
-          </p>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>הגדרות מטבע</h3></div>
+        <div style={styles.fxRow}>
+          <Field label="שער המרה — 1 דולר בשקלים">
+            <input style={{ ...styles.input, maxWidth: 160 }} dir="ltr" value={fx.usdIls}
+              onChange={(e) => setFx({ usdIls: e.target.value })}
+              onBlur={(e) => { const v = Number(e.target.value); setFx({ usdIls: v > 0 ? v : DEFAULT_FX.usdIls }); }} />
+          </Field>
+          <Field label="מטבע תצוגה">
+            <select style={{ ...styles.input, maxWidth: 160 }} value={fx.display} onChange={(e) => setFx({ display: e.target.value })}>
+              <option value="ILS">₪ שקל</option>
+              <option value="USD">$ דולר</option>
+            </select>
+          </Field>
         </div>
-
-        {costState === "loading" && (
-          <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען עלויות…</p></div>
-        )}
-        {costState === "ready" && sortedCosts.length === 0 && (
-          <div style={{ padding: "10px 4px", color: "#64748B", fontSize: 14 }}>עדיין לא תועדו עלויות.</div>
-        )}
-        {costState === "ready" && sortedCosts.length > 0 && (
-          <div style={{ overflowX: "auto" }}>
-            <table style={styles.statTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>תאריך</th>
-                  <th style={styles.th}>קמפיין</th>
-                  <th style={styles.th}>סכום</th>
-                  <th style={styles.th}>הערה</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedCosts.map((c) => (
-                  <tr key={c.cost_id}>
-                    <td style={styles.td}>{c.spend_date}</td>
-                    <td style={styles.tdName}>{c.campaign}</td>
-                    <td style={styles.td}>{money(c.amount, c.currency)}</td>
-                    <td style={styles.td}>{c.note || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <p style={styles.costHint}>לתיקון או מחיקה של שורת עלות, ערוך את לשונית CampaignCosts בגיליון.</p>
+        <p style={styles.costHint}>
+          חיובים נשמרים במטבע שבו הוזנו. השער כאן משמש רק לתצוגה: כל הסכומים המצרפיים
+          מוצגים במטבע אחד כדי שאפשר יהיה להשוות ביניהם, והפירוט המקורי מופיע בהצבעה עם העכבר.
+        </p>
       </div>
     </div>
   );
@@ -1640,6 +1667,16 @@ function sumByCurrency(rows) {
   return out;
 }
 const currencyList = (totals) => Object.keys(totals).filter((c) => totals[c] > 0);
+// Convert a per-currency map into one number in the chosen display currency.
+function totalIn(totals, fx) {
+  const rate = Number(fx && fx.usdIls) > 0 ? Number(fx.usdIls) : DEFAULT_FX.usdIls;
+  const ils = (totals.ILS || 0) + (totals.USD || 0) * rate;
+  return (fx && fx.display) === "USD" ? ils / rate : ils;
+}
+const fxMoney = (n, fx) => money(n, (fx && fx.display) || "ILS");
+// The untouched per-currency split, shown as a tooltip next to converted sums.
+const fxBreakdown = (totals) => currencyList(totals).map((c) => money(totals[c], c)).join(" + ");
+const hasCost = (totals) => currencyList(totals).length > 0;
 
 function RangePicker({ value, onChange, customFrom, customTo, onCustom }) {
   return (
@@ -1768,10 +1805,8 @@ function FunnelTab({ events, bounds, leads }) {
   );
 }
 
-function CampaignsTab({ leads, costs, bounds, campaigns, onAddCost, session }) {
-  const [form, setForm] = useState({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" });
-  const [saving, setSaving] = useState(false);
-  const [open, setOpen] = useState(false);
+function CampaignsTab({ leads, costs, bounds }) {
+  const { fx } = useStats();
 
   const periodLeads = leads.filter((l) => inRange(parseDMY(l.created_at), bounds));
   const periodCosts = costs.filter((c) => inRange(parseDMY(c.spend_date), bounds));
@@ -1792,80 +1827,26 @@ function CampaignsTab({ leads, costs, bounds, campaigns, onAddCost, session }) {
 
   const maxLeads = Math.max(1, ...rows.map((r) => r.leads));
   const grandTotals = sumByCurrency(periodCosts);
-  const grandCurrencies = currencyList(grandTotals);
-
-  const submit = async () => {
-    setSaving(true);
-    const ok = await onAddCost(form);
-    setSaving(false);
-    if (ok) { setForm({ campaign: "", spend_date: "", amount: "", currency: "ILS", note: "" }); setOpen(false); }
-  };
 
   // Cost per lead is only meaningful when there are both costs and leads;
   // showing "₪0" or a division by zero would read as a real figure.
-  const perLead = (totals, n) => {
-    const curs = currencyList(totals);
-    if (!curs.length || !n) return "—";
-    return curs.map((c) => money(totals[c] / n, c)).join(" + ");
-  };
-  const totalText = (totals) => {
-    const curs = currencyList(totals);
-    return curs.length ? curs.map((c) => money(totals[c], c)).join(" + ") : "—";
-  };
+  const perLead = (totals, n) => (!hasCost(totals) || !n) ? "—" : fxMoney(totalIn(totals, fx) / n, fx);
+  const totalText = (totals) => hasCost(totals) ? fxMoney(totalIn(totals, fx), fx) : "—";
 
   return (
     <div>
       <div style={styles.kpiRow} className="kpi-row">
         <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="לידים בתקופה" value={periodLeads.length} />
         <Kpi icon={<Target size={20} />} tint="#8B5CF6" label="קמפיינים פעילים" value={rows.length} />
-        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="עלות בתקופה" value={grandCurrencies.length ? grandCurrencies.map((c) => money(grandTotals[c], c)).join(" + ") : "—"} />
+        <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="עלות בתקופה" value={<span title={fxBreakdown(grandTotals)}>{totalText(grandTotals)}</span>} />
         <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="סגרו בתקופה" value={periodLeads.filter((l) => l.stage === "closed").length} />
       </div>
 
       <div style={styles.card}>
         <div style={styles.cardHead}>
           <h3 style={styles.cardTitle}>ביצועים לפי קמפיין</h3>
-          <button style={styles.addCostBtn} onClick={() => setOpen((v) => !v)}>
-            <Plus size={15} /> תיעוד עלות
-          </button>
+          <span style={styles.cardHint}>תיעוד ועריכה של עלויות נעשים במסך הקמפיינים, בתוך כרטיס הקמפיין</span>
         </div>
-
-        {open && (
-          <div style={styles.costForm}>
-            <div style={styles.costFormRow}>
-              <Field label="קמפיין">
-                <select style={styles.input} value={form.campaign} onChange={(e) => setForm({ ...form, campaign: e.target.value })}>
-                  <option value="">בחר קמפיין…</option>
-                  {campaigns.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </Field>
-              <DateField label="תאריך החיוב" value={form.spend_date} onChange={(v) => setForm({ ...form, spend_date: v })} />
-            </div>
-            <div style={styles.costFormRow}>
-              <Field label="סכום">
-                <input style={styles.input} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} dir="ltr" />
-              </Field>
-              <Field label="מטבע">
-                <select style={styles.input} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
-                  <option value="ILS">₪ שקל</option>
-                  <option value="USD">$ דולר</option>
-                </select>
-              </Field>
-            </div>
-            <Field label="הערה">
-              <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-            </Field>
-            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-              <button style={{ ...styles.saveBtn, flex: 1, opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={submit}>
-                {saving ? "שומר…" : "שמור עלות"}
-              </button>
-              <button style={styles.cancelBtn} onClick={() => setOpen(false)}>ביטול</button>
-            </div>
-            <p style={styles.costHint}>
-              כל שורה היא חיוב בודד. אפשר להזין רטרואקטיבית כמה שורות לאותו קמפיין, אחת לכל חיוב, והסינון לפי זמן יסכום רק את מה שנופל בטווח.
-            </p>
-          </div>
-        )}
 
         {rows.length === 0 ? (
           <div style={{ padding: "18px 4px", color: "#64748B", fontSize: 14 }}>אין לידים או עלויות בטווח שנבחר.</div>
@@ -1890,7 +1871,7 @@ function CampaignsTab({ leads, costs, bounds, campaigns, onAddCost, session }) {
                     <td style={styles.td}>{r.leads}</td>
                     <td style={styles.td}>{r.interested}</td>
                     <td style={styles.td}>{r.closed}</td>
-                    <td style={styles.td}>{totalText(r.totals)}</td>
+                    <td style={styles.td} title={fxBreakdown(r.totals)}>{totalText(r.totals)}</td>
                     <td style={styles.td}>{perLead(r.totals, r.leads)}</td>
                     <td style={styles.td}>{perLead(r.totals, r.closed)}</td>
                   </tr>
@@ -1927,49 +1908,14 @@ function Analytics({ stats, leads, allLeads, onOpen, onFilterClick, session, fla
   const [range, setRange] = useState("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
-  const [data, setData] = useState({ events: [], costs: [] });
-  const [state, setState] = useState("idle"); // idle | loading | ready | error
-
-  // Fetched lazily: the overview tab doesn't need it, and most sessions never
-  // leave the overview.
-  const load = useCallback(async () => {
-    setState("loading");
-    try {
-      const res = await fetch(API.stats);
-      if (!res.ok) throw new Error();
-      const d = await res.json();
-      setData({ events: d.events || [], costs: d.costs || [] });
-      setState("ready");
-    } catch {
-      setState("error");
-    }
-  }, []);
+  // Events + costs come from the shared provider, so switching screens doesn't
+  // refetch them. Loaded lazily: most sessions never leave the overview.
+  const { events, costs, state, ensure, reload: load } = useStats();
   useEffect(() => {
-    if ((tab === "funnel" || tab === "campaigns") && state === "idle") load();
-  }, [tab, state, load]);
-
-  const addCost = async (form) => {
-    try {
-      const res = await fetch(API.costAdd, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, created_by: session.email || "" }),
-      });
-      if (!res.ok) throw new Error();
-      const out = await res.json();
-      if (!out || out.ok !== true) throw new Error();
-      flash("העלות נשמרה");
-      await load();
-      return true;
-    } catch {
-      flash("שמירת העלות נכשלה — בדוק קמפיין, תאריך וסכום", "err");
-      return false;
-    }
-  };
+    if (tab === "funnel" || tab === "campaigns") ensure();
+  }, [tab, ensure]);
 
   const bounds = rangeBounds(range, customFrom, customTo);
-  const campaigns = Array.from(new Set(
-    allLeads.map((l) => String(l.campaign || "").trim()).filter(Boolean)
-  )).sort();
 
   return (
     <div>
@@ -2006,9 +1952,9 @@ function Analytics({ stats, leads, allLeads, onOpen, onFilterClick, session, fla
               <button style={styles.retryBtn} onClick={load}>נסה שוב</button>
             </div>
           )}
-          {state === "ready" && tab === "funnel" && <FunnelTab events={data.events} bounds={bounds} leads={leads} />}
-          {state === "ready" && tab === "campaigns" && (
-            <CampaignsTab leads={allLeads} costs={data.costs} bounds={bounds} campaigns={campaigns} onAddCost={addCost} session={session} />
+          {(state === "ready" || state === "idle") && tab === "funnel" && <FunnelTab events={events} bounds={bounds} leads={leads} />}
+          {(state === "ready" || state === "idle") && tab === "campaigns" && (
+            <CampaignsTab leads={allLeads} costs={costs} bounds={bounds} />
           )}
         </>
       )}
@@ -2573,6 +2519,169 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onS
   );
 }
 
+// ============ Tasks ============
+// Every open task across every lead, in one list. This is the screen a sales
+// person lives in: what is due today, what slipped, and whose it is.
+function TasksBoard({ leads, session, onOpen, onToggle, onSnooze }) {
+  const me = (session && session.email) || "";
+  const [scope, setScope] = useState("mine"); // mine | all
+  const [showDone, setShowDone] = useState(false);
+
+  const rows = useMemo(() => {
+    const out = [];
+    leads.forEach((lead) => {
+      parseTasks(lead).forEach((t) => {
+        if (!showDone && t.done) return;
+        if (scope === "mine" && String(t.owner || lead.owner || "") !== me) return;
+        out.push({ lead, task: t, due: parseDMY(t.due) });
+      });
+    });
+    return out.sort((a, b) => {
+      if (a.task.done !== b.task.done) return a.task.done ? 1 : -1;
+      const da = a.due ? a.due.getTime() : Infinity, db = b.due ? b.due.getTime() : Infinity;
+      return da - db;
+    });
+  }, [leads, scope, showDone, me]);
+
+  const today = startOfToday();
+  const overdue = rows.filter((r) => !r.task.done && r.due && r.due < today).length;
+  const dueToday = rows.filter((r) => !r.task.done && r.due && r.due.getTime() === today.getTime()).length;
+
+  return (
+    <div>
+      <h1 style={styles.pageTitle}>משימות</h1>
+      <p style={styles.pageSub}>כל המשימות הפתוחות על פני כל הלידים, לפי מועד</p>
+
+      <div style={styles.kpiRow} className="kpi-row">
+        <Kpi icon={<Clock size={20} />} tint="#EF4444" label="באיחור" value={overdue} />
+        <Kpi icon={<CalendarClock size={20} />} tint={KAPPA.teal} label="להיום" value={dueToday} />
+        <Kpi icon={<CheckCircle2 size={20} />} tint="#10B981" label="פתוחות סה״כ" value={rows.filter((r) => !r.task.done).length} />
+      </div>
+
+      <div style={styles.taskBar}>
+        <div style={styles.viewToggle}>
+          <button onClick={() => setScope("mine")} style={{ ...styles.toggleBtn, ...(scope === "mine" ? styles.toggleActive : {}) }}>שלי</button>
+          <button onClick={() => setScope("all")} style={{ ...styles.toggleBtn, ...(scope === "all" ? styles.toggleActive : {}) }}>הכל</button>
+        </div>
+        <label style={styles.taskShowDone}>
+          <input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} />
+          הצג גם משימות שהושלמו
+        </label>
+      </div>
+
+      {rows.length === 0 ? (
+        <div style={styles.centerState}>
+          <CheckCircle2 size={38} color="#CBD5E1" />
+          <p style={styles.stateText}>אין משימות פתוחות. אפשר להוסיף משימה מתוך כרטיס הליד.</p>
+        </div>
+      ) : (
+        <div style={styles.taskList}>
+          {rows.map(({ lead, task, due }) => {
+            const late = !task.done && due && due < today;
+            const isToday = !task.done && due && due.getTime() === today.getTime();
+            return (
+              <div key={lead.id + task.id} style={styles.taskRow}>
+                <button style={styles.taskCheck} onClick={() => onToggle(lead, task.id)}
+                  aria-label={task.done ? "סמן כלא הושלמה" : "סמן כהושלמה"} title={task.done ? "החזר לפתוחה" : "סיים"}>
+                  <CheckCircle2 size={20} color={task.done ? "#10B981" : "#CBD5E1"} />
+                </button>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ ...styles.taskTitle, textDecoration: task.done ? "line-through" : "none", color: task.done ? "#94A3B8" : KAPPA.ink }}>
+                    {task.title}
+                  </div>
+                  <div style={styles.taskMeta}>
+                    {taskTypeLabel(task.type)} · <button className="row-btn" style={styles.taskLeadLink} onClick={() => onOpen(lead)}>{lead.name}</button>
+                    {task.owner ? ` · ${task.owner}` : ""}
+                  </div>
+                </div>
+                <span style={{ ...styles.taskDue, color: late ? "#EF4444" : isToday ? KAPPA.tealDark : "#94A3B8" }}>
+                  {task.due || "ללא תאריך"}
+                </span>
+                {!task.done && (
+                  <button style={styles.quickBtn} onClick={() => onSnooze(lead, task.id, 1)}>דחה יום</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Tasks for a single lead, inside the drawer.
+function TasksBlock({ lead, owners, session, onSaveTasks }) {
+  const tasks = parseTasks(lead);
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("call");
+  const [due, setDue] = useState("");
+  const [owner, setOwner] = useState((session && session.email) || "");
+  const [saving, setSaving] = useState(false);
+
+  const add = async () => {
+    const t = title.trim();
+    if (!t || saving) return;
+    setSaving(true);
+    await onSaveTasks(lead, [...tasks, { id: newTaskId(), title: t, type, due, owner, done: false, created_at: todayStr() }]);
+    setTitle(""); setDue("");
+    setSaving(false);
+  };
+  const toggle = (id) => onSaveTasks(lead, tasks.map((x) => (x.id === id
+    ? { ...x, done: !x.done, done_at: !x.done ? todayStr() : "" } : x)));
+  const remove = (id) => onSaveTasks(lead, tasks.filter((x) => x.id !== id));
+
+  const sorted = [...tasks].sort((a, b) => {
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    const da = parseDMY(a.due), db = parseDMY(b.due);
+    return (da ? da.getTime() : Infinity) - (db ? db.getTime() : Infinity);
+  });
+
+  return (
+    <div style={styles.summaryBox}>
+      <div style={styles.summaryLabel}>משימות</div>
+      {sorted.length === 0 && <div style={styles.histEmpty}>אין משימות פתוחות לליד הזה.</div>}
+      {sorted.map((t) => {
+        const late = !t.done && isDue(t.due);
+        return (
+          <div key={t.id} style={styles.taskMini}>
+            <button style={styles.taskCheck} onClick={() => toggle(t.id)} aria-label={t.done ? "החזר לפתוחה" : "סיים"}>
+              <CheckCircle2 size={18} color={t.done ? "#10B981" : "#CBD5E1"} />
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ ...styles.taskMiniTitle, textDecoration: t.done ? "line-through" : "none", color: t.done ? "#94A3B8" : KAPPA.ink }}>{t.title}</div>
+              <div style={styles.taskMiniMeta}>
+                {taskTypeLabel(t.type)}{t.due ? ` · ${t.due}` : ""}{t.owner ? ` · ${t.owner}` : ""}
+              </div>
+            </div>
+            {late && <span style={styles.taskLate}>באיחור</span>}
+            <button style={styles.taskDelete} onClick={() => remove(t.id)} aria-label="מחק משימה" title="מחק">×</button>
+          </div>
+        );
+      })}
+      <div style={styles.taskAddGrid} className="task-add-grid">
+        <input style={styles.input} placeholder="משימה חדשה…" value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <select style={styles.input} value={type} onChange={(e) => setType(e.target.value)} aria-label="סוג משימה">
+          {TASK_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+        <select style={styles.input} value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="אחראי">
+          {owners.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </div>
+      <div style={styles.taskAddFoot}>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <DateField label="מועד יעד" value={due} onChange={setDue} />
+        </div>
+        <button style={{ ...styles.summaryAddBtn, opacity: title.trim() && !saving ? 1 : 0.5, cursor: title.trim() && !saving ? "pointer" : "not-allowed" }}
+          disabled={!title.trim() || saving} onClick={add}>
+          {saving ? "שומר…" : "הוסף משימה"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ============ Journey ============
 function JourneyBoard({ leads, onOpen }) {
   return (
@@ -2705,50 +2814,29 @@ function InvestmentsView({ lead }) {
   );
 }
 
-// The stats payload is shared by three screens; cache it briefly so opening a
-// lead doesn't refetch the whole events + costs feed on every click.
-let _statsCache = null, _statsAt = 0;
-async function fetchStatsCached(maxAgeMs = 60000) {
-  if (_statsCache && Date.now() - _statsAt < maxAgeMs) return _statsCache;
-  const res = await fetch(API.stats);
-  if (!res.ok) throw new Error();
-  _statsCache = await res.json();
-  _statsAt = Date.now();
-  return _statsCache;
-}
-
 // Per-lead stage history, read from the same Events log the funnel uses: who
 // moved the lead, when, and how long it sat in the previous stage.
 function StageHistory({ lead }) {
-  const [events, setEvents] = useState(null); // null = loading
-  const [error, setError] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    setEvents(null); setError(false);
-    fetchStatsCached()
-      .then((d) => {
-        if (!alive) return;
-        const evs = (d.events || [])
-          .filter((e) => String(e.lead_id || "") === String(lead.id))
-          .sort((a, b) => {
-            const da = parseStamp(a.changed_at), db = parseStamp(b.changed_at);
-            return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-          });
-        setEvents(evs);
-      })
-      .catch(() => { if (alive) setError(true); });
-    return () => { alive = false; };
-  }, [lead.id]);
+  const { events: allEvents, state, ensure } = useStats();
+  useEffect(() => { ensure(); }, [ensure]);
+  const events = useMemo(() => allEvents
+    .filter((e) => String(e.lead_id || "") === String(lead.id))
+    .sort((a, b) => {
+      const da = parseStamp(a.changed_at), db = parseStamp(b.changed_at);
+      return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+    }), [allEvents, lead.id]);
+  const loading = state === "loading" || state === "idle";
+  const error = state === "error";
 
   return (
     <div style={styles.summaryBox}>
       <div style={styles.summaryLabel}>היסטוריית שלבים</div>
-      {events === null && !error && <div style={styles.histEmpty}>טוען…</div>}
+      {loading && <div style={styles.histEmpty}>טוען…</div>}
       {error && <div style={styles.histEmpty}>לא הצלחנו לטעון את ההיסטוריה.</div>}
-      {events !== null && events.length === 0 && (
+      {!loading && !error && events.length === 0 && (
         <div style={styles.histEmpty}>אין עדיין מעברי שלבים מתועדים לליד הזה.</div>
       )}
-      {events !== null && events.map((e, i) => {
+      {!loading && !error && events.map((e, i) => {
         const to = stageOf(e.to_stage);
         const from = e.from_stage ? stageOf(e.from_stage) : null;
         const prev = events[i + 1];
@@ -2777,7 +2865,7 @@ function StageHistory({ lead }) {
 }
 
 // ============ Drawer ============
-function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
+function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, owners = [], onSaveTasks }) {
   const isMobile = useIsMobile();
   const [editing, setEditing] = useState(false);
   const [maximized, setMaximized] = useState(false);
@@ -2864,6 +2952,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
                     <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
                     <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
                   </div>
+                  <OwnerField value={f.owner || ""} owners={owners} onChange={(v) => set("owner", v)} />
                   <InvestmentsEditor rows={invRows} onChange={setInvRows} />
                 </div>
                 <div>
@@ -2890,6 +2979,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
                   <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
                   <Field label="גורם מפנה"><input style={styles.input} value={f.referrer || ""} onChange={(e) => set("referrer", e.target.value)} /></Field>
                 </div>
+                <OwnerField value={f.owner || ""} owners={owners} onChange={(v) => set("owner", v)} />
                 <InvestmentsEditor rows={invRows} onChange={setInvRows} />
                 <div style={styles.fieldRow}>
                   <DateField label="מועד פגישה" value={f.meeting_date || ""} onChange={(v) => set("meeting_date", v)} />
@@ -2958,6 +3048,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
             );
             const detailBlock = (
               <div style={styles.detailGrid}>
+                <Detail label="בעלים" value={lead.owner || "—"} />
                 <Detail label="קמפיין" value={lead.campaign || "—"} />
                 <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
                 <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
@@ -2981,6 +3072,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
             );
             const notesBlock = <SummaryNotes lead={lead} onSave={onSave} />;
             const historyBlock = <StageHistory lead={lead} />;
+            const tasksBlock = <TasksBlock lead={lead} owners={owners} session={session} onSaveTasks={onSaveTasks} />;
             const meetingBlock = <MeetingAISummary lead={lead} onSave={onSave} />;
             const journeyBlock = isInterested && (
               <div style={styles.journeyPromo} className="journey-promo">
@@ -3019,6 +3111,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
                   {notesBlock}
                 </div>
                 <div>
+                  {tasksBlock}
                   {meetingBlock}
                   {historyBlock}
                   {journeyBlock}
@@ -3032,6 +3125,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
                 <InvestmentsView lead={lead} />
                 {reasonBlock}
                 {notesBlock}
+                {tasksBlock}
                 {meetingBlock}
                 {historyBlock}
                 {journeyBlock}
@@ -3196,11 +3290,12 @@ function MeetingAISummary({ lead, onSave }) {
 }
 
 // ============ Add ============
-function AddLead({ onClose, onSave, leads = [] }) {
+function AddLead({ onClose, onSave, leads = [], session, owners = [] }) {
   const { active: activeCampaigns } = useCampaigns();
   const [f, setF] = useState({
     name: "", phone: "", email: "", campaign: activeCampaigns[0] || "", referrer: "",
     stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
+    owner: (session && session.email) || "",
   });
   const [invRows, setInvRows] = useState([{ track: "", amount: "", compound: false }]);
   const [saving, setSaving] = useState(false);
@@ -3276,6 +3371,7 @@ function AddLead({ onClose, onSave, leads = [] }) {
             <CampaignField value={f.campaign} onChange={(v) => set("campaign", v)} />
             <Field label="גורם מפנה"><input style={styles.input} value={f.referrer} onChange={(e) => set("referrer", e.target.value)} /></Field>
           </div>
+          <OwnerField value={f.owner} owners={owners} onChange={(v) => set("owner", v)} />
           <InvestmentsEditor rows={invRows} onChange={setInvRows} />
           <div style={styles.fieldRow}>
             <Field label="שלב">
@@ -3299,6 +3395,28 @@ function AddLead({ onClose, onSave, leads = [] }) {
     </div>
   );
 }
+// Owner picker: the known owners plus a free-text option, so a lead can be
+// assigned to someone who has no lead yet.
+function OwnerField({ value, owners, onChange }) {
+  const list = owners.includes(value) || !value ? owners : owners.concat([value]);
+  const [custom, setCustom] = useState(false);
+  return (
+    <Field label="בעלים">
+      {custom ? (
+        <input style={styles.input} dir="ltr" autoFocus value={value} placeholder="name@kappainv.com"
+          onChange={(e) => onChange(e.target.value)} onBlur={() => setCustom(false)} />
+      ) : (
+        <select style={styles.input} value={value || ""}
+          onChange={(e) => { if (e.target.value === "__other") { setCustom(true); onChange(""); } else onChange(e.target.value); }}>
+          <option value="">ללא בעלים</option>
+          {list.map((o) => <option key={o} value={o}>{o}</option>)}
+          <option value="__other">אחר…</option>
+        </select>
+      )}
+    </Field>
+  );
+}
+
 function Field({ label, children }) {
   return <div style={styles.field}><label style={styles.fieldLabel}>{label}</label>{children}</div>;
 }
@@ -3431,6 +3549,7 @@ const css = `
     .journey-line { min-width: 4px !important; margin-top: 14px !important; }
     .journey-promo { padding: 14px 10px !important; }
     .drawer-body { padding: 16px 14px !important; }
+    .task-add-grid { grid-template-columns: 1fr !important; }
   }
 `;
 
@@ -3451,6 +3570,22 @@ const styles = {
   quickRow: { display: "flex", gap: 6, marginTop: 8 },
   quickBtn: { border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.graphite, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   toastAction: { marginRight: 10, border: "1px solid rgba(255,255,255,0.4)", background: "transparent", color: "#fff", borderRadius: 7, padding: "3px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  taskBar: { display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 14 },
+  taskShowDone: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, color: KAPPA.graphite, cursor: "pointer" },
+  taskList: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
+  taskRow: { display: "flex", alignItems: "center", gap: 12, padding: "13px 18px", borderTop: "1px solid #F1F5F9" },
+  taskCheck: { border: "none", background: "transparent", cursor: "pointer", padding: 0, display: "grid", placeItems: "center", flexShrink: 0 },
+  taskTitle: { fontSize: 15, fontWeight: 600 },
+  taskMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" },
+  taskLeadLink: { border: "none", background: "none", padding: 0, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: KAPPA.tealDark, cursor: "pointer" },
+  taskDue: { fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" },
+  taskMini: { display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #EEF2F6" },
+  taskMiniTitle: { fontSize: 14, fontWeight: 600 },
+  taskMiniMeta: { fontSize: 12, color: "#94A3B8", marginTop: 2 },
+  taskLate: { fontSize: 11.5, fontWeight: 700, color: "#B91C1C", background: "#FEF2F2", borderRadius: 6, padding: "2px 7px" },
+  taskDelete: { border: "none", background: "transparent", color: "#CBD5E1", fontSize: 18, lineHeight: 1, cursor: "pointer", padding: "0 2px" },
+  taskAddGrid: { display: "grid", gridTemplateColumns: "1.6fr 1fr 1.2fr", gap: 8, marginTop: 12 },
+  taskAddFoot: { display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginTop: 8 },
   histRow: { display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 0", borderBottom: "1px solid #EEF2F6" },
   histDot: { width: 9, height: 9, borderRadius: "50%", marginTop: 6, flexShrink: 0 },
   histMain: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" },
@@ -3535,6 +3670,8 @@ const styles = {
   costNoteCell: { maxWidth: 516 },
   costSaveBtn: { width: "auto", padding: "12px 32px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 14 },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
+  fxRow: { display: "flex", gap: 16, flexWrap: "wrap", padding: "0 26px", alignItems: "flex-end" },
+  cardHint: { fontSize: 12.5, color: "#94A3B8", fontWeight: 500 },
   costHint: { fontSize: 13, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
   addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 26px 18px", maxWidth: 520 },
   addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "12px 15px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 15, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
