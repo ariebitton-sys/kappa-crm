@@ -683,6 +683,27 @@ export default function App() {
     }
   };
 
+  // Renaming a campaign has to rewrite every lead that carries the old name —
+  // leads store the campaign as a plain string, so without this the campaign
+  // would show 0 leads and the statistics would split into two rows.
+  const renameCampaignOnLeads = async (oldName, newName) => {
+    const affected = leads.filter((l) => String(l.campaign || "").trim() === oldName);
+    if (!affected.length) return { moved: 0, failed: 0 };
+    setLeads((ls) => ls.map((l) => (String(l.campaign || "").trim() === oldName ? { ...l, campaign: newName } : l)));
+    let failed = 0;
+    for (const l of affected) {
+      try {
+        const res = await fetch(API.update, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...l, campaign: newName }),
+        });
+        if (!res.ok) throw new Error();
+      } catch { failed++; }
+    }
+    if (failed) await loadLeads(true); // resync: some rows kept the old name
+    return { moved: affected.length - failed, failed };
+  };
+
   // restore lead → POST /crm/lead/restore
   // Writes the archived lead back into the Leads sheet and stamps the archive
   // row as restored, so the deletion stays on record but drops out of the bin.
@@ -773,7 +794,7 @@ export default function App() {
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
           )}
           {status === "ready" && view === "campaigns" && (
-            <CampaignsAdmin leads={leads} session={session} flash={flash} />
+            <CampaignsAdmin leads={leads} session={session} flash={flash} onRenameLeads={renameCampaignOnLeads} />
           )}
           {status === "ready" && view === "journey" && (
             <JourneyBoard leads={leads.filter((l) => l.stage === "interested")} onOpen={setSelected} />
@@ -1208,7 +1229,7 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
   );
 }
 
-function CampaignsAdmin({ leads, session, flash }) {
+function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
   const { rows, reload, save, state } = useCampaigns();
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState("");
@@ -1313,7 +1334,7 @@ function CampaignsAdmin({ leads, session, flash }) {
       if (!res.ok) throw new Error();
       const out = await res.json();
       if (!out || out.ok !== true) throw new Error();
-      flash(payload.cost_id ? "החיוב עודכן" : "החיוב נשמר");
+      if (!payload.silent) flash(payload.cost_id ? "החיוב עודכן" : "החיוב נשמר");
       await loadCosts();
       return true;
     } catch {
@@ -1343,8 +1364,19 @@ function CampaignsAdmin({ leads, session, flash }) {
   const renameCampaign = async (row, name) => {
     setBusy(row.campaign_id);
     const ok = await save({ campaign_id: row.campaign_id, name, active: row.active, created_at: row.created_at });
+    if (!ok) { setBusy(""); flash("העדכון נכשל", "err"); return; }
+    // The campaign row is renamed; now move the leads and the cost ledger over
+    // so nothing keeps pointing at a name that no longer exists.
+    const res = onRenameLeads ? await onRenameLeads(row.name, name) : { moved: 0, failed: 0 };
+    const mine = costs.filter((c) => String(c.campaign || "").trim() === row.name);
+    for (const c of mine) {
+      await saveCostEntry({ cost_id: c.cost_id, campaign: name, spend_date: c.spend_date, amount: c.amount, currency: c.currency, note: c.note, created_at: c.created_at, silent: true });
+    }
     setBusy("");
-    flash(ok ? "השם עודכן" : "העדכון נכשל", ok ? "ok" : "err");
+    flash(res.failed
+      ? `השם עודכן, אבל ${res.failed} לידים לא התעדכנו — נסה שוב`
+      : `השם עודכן${res.moved ? ` · ${res.moved} לידים הועברו` : ""}`,
+      res.failed ? "err" : "ok");
   };
 
   const openCampaign = rows.find((r) => r.campaign_id === openId) || null;
@@ -2673,6 +2705,77 @@ function InvestmentsView({ lead }) {
   );
 }
 
+// The stats payload is shared by three screens; cache it briefly so opening a
+// lead doesn't refetch the whole events + costs feed on every click.
+let _statsCache = null, _statsAt = 0;
+async function fetchStatsCached(maxAgeMs = 60000) {
+  if (_statsCache && Date.now() - _statsAt < maxAgeMs) return _statsCache;
+  const res = await fetch(API.stats);
+  if (!res.ok) throw new Error();
+  _statsCache = await res.json();
+  _statsAt = Date.now();
+  return _statsCache;
+}
+
+// Per-lead stage history, read from the same Events log the funnel uses: who
+// moved the lead, when, and how long it sat in the previous stage.
+function StageHistory({ lead }) {
+  const [events, setEvents] = useState(null); // null = loading
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setEvents(null); setError(false);
+    fetchStatsCached()
+      .then((d) => {
+        if (!alive) return;
+        const evs = (d.events || [])
+          .filter((e) => String(e.lead_id || "") === String(lead.id))
+          .sort((a, b) => {
+            const da = parseStamp(a.changed_at), db = parseStamp(b.changed_at);
+            return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+          });
+        setEvents(evs);
+      })
+      .catch(() => { if (alive) setError(true); });
+    return () => { alive = false; };
+  }, [lead.id]);
+
+  return (
+    <div style={styles.summaryBox}>
+      <div style={styles.summaryLabel}>היסטוריית שלבים</div>
+      {events === null && !error && <div style={styles.histEmpty}>טוען…</div>}
+      {error && <div style={styles.histEmpty}>לא הצלחנו לטעון את ההיסטוריה.</div>}
+      {events !== null && events.length === 0 && (
+        <div style={styles.histEmpty}>אין עדיין מעברי שלבים מתועדים לליד הזה.</div>
+      )}
+      {events !== null && events.map((e, i) => {
+        const to = stageOf(e.to_stage);
+        const from = e.from_stage ? stageOf(e.from_stage) : null;
+        const prev = events[i + 1];
+        const d1 = parseStamp(e.changed_at), d0 = prev ? parseStamp(prev.changed_at) : null;
+        const held = d0 && d1 ? Math.max(0, Math.round((d1 - d0) / 86400000)) : null;
+        return (
+          <div key={i} style={styles.histRow}>
+            <span style={{ ...styles.histDot, background: to.color }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={styles.histMain}>
+                {from && <span style={styles.histFrom}>{from.label}</span>}
+                {from && <span style={styles.histArrow}>←</span>}
+                <span style={{ ...styles.histTo, color: to.color }}>{to.label}</span>
+              </div>
+              <div style={styles.histMeta}>
+                {e.changed_at || "—"}
+                {e.changed_by ? ` · ${e.changed_by}` : ""}
+                {held != null ? ` · אחרי ${held} ימים` : ""}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ============ Drawer ============
 function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
   const isMobile = useIsMobile();
@@ -2877,6 +2980,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
               </div>
             );
             const notesBlock = <SummaryNotes lead={lead} onSave={onSave} />;
+            const historyBlock = <StageHistory lead={lead} />;
             const meetingBlock = <MeetingAISummary lead={lead} onSave={onSave} />;
             const journeyBlock = isInterested && (
               <div style={styles.journeyPromo} className="journey-promo">
@@ -2916,6 +3020,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
                 </div>
                 <div>
                   {meetingBlock}
+                  {historyBlock}
                   {journeyBlock}
                   {stageSwitchBlock}
                   {deleteBlock}
@@ -2928,6 +3033,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete }) {
                 {reasonBlock}
                 {notesBlock}
                 {meetingBlock}
+                {historyBlock}
                 {journeyBlock}
                 {stageSwitchBlock}
                 {deleteBlock}
@@ -3332,19 +3438,27 @@ const FONT = `"Heebo", "Assistant", -apple-system, "Segoe UI", sans-serif`;
 const styles = {
   lTableWrap: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflowX: "auto", marginTop: 16 },
   lTable: { width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: 880 },
-  lTh: { textAlign: "right", padding: "11px 14px", borderBottom: "1px solid #EAEEF3", background: "#F8FAFC", whiteSpace: "nowrap" },
-  lThBtn: { display: "inline-flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 700, color: "#64748B", padding: 0 },
-  lThStatic: { fontSize: 13, fontWeight: 700, color: "#64748B" },
+  lTh: { textAlign: "right", padding: "12px 14px", borderBottom: "1px solid #EAEEF3", background: "#F8FAFC", whiteSpace: "nowrap" },
+  lThBtn: { display: "inline-flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", fontFamily: FONT, fontSize: 14, fontWeight: 700, color: "#64748B", padding: 0 },
+  lThStatic: { fontSize: 14, fontWeight: 700, color: "#64748B" },
   lThArrow: { fontSize: 9, color: KAPPA.teal },
   lTr: { borderBottom: "1px solid #F1F5F9", cursor: "pointer" },
-  lTd: { padding: "12px 14px", fontSize: 14, color: KAPPA.graphite, verticalAlign: "middle", whiteSpace: "nowrap" },
+  lTd: { padding: "12px 14px", fontSize: 15, color: KAPPA.graphite, verticalAlign: "middle", whiteSpace: "nowrap" },
   lTdName: { display: "flex", alignItems: "center", gap: 10 },
-  lTableEmpty: { background: "#fff", borderRadius: 15, padding: "44px 20px", textAlign: "center", color: "#94A3B8", fontSize: 15, marginTop: 16 },
+  lTableEmpty: { background: "#fff", borderRadius: 15, padding: "44px 20px", textAlign: "center", color: "#94A3B8", fontSize: 14, marginTop: 16 },
   ageTag: { display: "inline-block", minWidth: 26, textAlign: "center", padding: "2px 8px", borderRadius: 20, background: "#F1F5F9", color: "#64748B", fontSize: 12.5, fontWeight: 700 },
   ageTagStuck: { background: "#FEF2F2", color: "#B91C1C" },
   quickRow: { display: "flex", gap: 6, marginTop: 8 },
   quickBtn: { border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.graphite, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   toastAction: { marginRight: 10, border: "1px solid rgba(255,255,255,0.4)", background: "transparent", color: "#fff", borderRadius: 7, padding: "3px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  histRow: { display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 0", borderBottom: "1px solid #EEF2F6" },
+  histDot: { width: 9, height: 9, borderRadius: "50%", marginTop: 6, flexShrink: 0 },
+  histMain: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" },
+  histFrom: { fontSize: 13.5, color: "#94A3B8", fontWeight: 600 },
+  histArrow: { fontSize: 13.5, color: "#CBD5E1" },
+  histTo: { fontSize: 14, fontWeight: 700 },
+  histMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
+  histEmpty: { fontSize: 13.5, color: "#94A3B8", padding: "4px 0" },
   noteList: { display: "flex", flexDirection: "column", gap: 8, margin: "4px 0 12px" },
   noteItem: { background: "#fff", border: "1px solid #EAEEF3", borderRadius: 10, padding: "8px 11px" },
   noteDate: { display: "block", fontSize: 11, fontWeight: 700, color: "#94A3B8", marginBottom: 3 },
@@ -3394,44 +3508,44 @@ const styles = {
   loginLoadingText: { fontSize: 13, color: "#94A3B8" },
   loginError: { marginTop: 18, background: "#FEF2F2", color: "#EF4444", fontSize: 13, fontWeight: 600, borderRadius: 9, padding: "10px 14px", lineHeight: 1.5 },
   content: { flex: 1, overflowY: "auto", padding: "28px 30px" },
-  pageTitle: { fontSize: 30, fontWeight: 800, margin: "0 0 6px", color: KAPPA.ink },
-  pageSub: { fontSize: 16, color: "#8695A8", margin: "0 0 26px" },
+  pageTitle: { fontSize: 28, fontWeight: 800, margin: "0 0 6px", color: KAPPA.ink },
+  pageSub: { fontSize: 15, color: "#8695A8", margin: "0 0 26px" },
   tabBar: { display: "flex", gap: 4, borderBottom: "1px solid #E8EDF2", margin: "6px 0 20px", overflowX: "auto" },
-  tabBtn: { background: "none", border: "none", borderBottom: "3px solid transparent", padding: "13px 20px", fontSize: 17, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap", marginBottom: -1 },
+  tabBtn: { background: "none", border: "none", borderBottom: "3px solid transparent", padding: "13px 20px", fontSize: 16, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap", marginBottom: -1 },
   rangeWrap: { marginBottom: 18 },
   rangeBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
-  rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
+  rangeBtn: { border: "1.5px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
   rangeCustom: { display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap", alignItems: "flex-end" },
   rangeDateField: { flex: "0 1 240px", minWidth: 190 },
   statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" },
   statDivider: { height: 1, background: "#F1F5F9", margin: "12px 0" },
   convRow: { display: "flex", alignItems: "center", gap: 14, padding: "15px 4px", borderBottom: "1px solid #F8FAFC" },
-  convLabel: { fontSize: 16, fontWeight: 700, color: KAPPA.ink },
-  convMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 3 },
-  convRate: { fontSize: 24, fontWeight: 800, flexShrink: 0 },
+  convLabel: { fontSize: 15, fontWeight: 700, color: KAPPA.ink },
+  convMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3 },
+  convRate: { fontSize: 22, fontVariantNumeric: "tabular-nums", fontWeight: 800, flexShrink: 0 },
   statTable: { width: "100%", borderCollapse: "collapse", fontFamily: FONT },
-  th: { textAlign: "right", fontSize: 15.5, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
-  thCenter: { textAlign: "center", fontSize: 15.5, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
-  td: { textAlign: "right", fontSize: 17, color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
-  tdCenter: { textAlign: "center", fontSize: 17, color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
-  tdName: { textAlign: "right", fontSize: 17, fontWeight: 700, color: KAPPA.ink, padding: "17px 16px", borderBottom: "1px solid #F8FAFC" },
+  th: { textAlign: "right", fontSize: 14, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
+  thCenter: { textAlign: "center", fontSize: 14, fontWeight: 700, color: "#94A3B8", padding: "15px 16px", borderBottom: "1px solid #E8EDF2", whiteSpace: "nowrap" },
+  td: { textAlign: "right", fontSize: 15, fontVariantNumeric: "tabular-nums", color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
+  tdCenter: { textAlign: "center", fontSize: 15, fontVariantNumeric: "tabular-nums", color: KAPPA.graphite, padding: "17px 16px", borderBottom: "1px solid #F8FAFC", whiteSpace: "nowrap" },
+  tdName: { textAlign: "right", fontSize: 15.5, fontWeight: 700, color: KAPPA.ink, padding: "17px 16px", borderBottom: "1px solid #F8FAFC" },
   addCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: `1px solid ${KAPPA.teal}55`, borderRadius: 9, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   costForm: { background: "#F8FAFC", border: "1px solid #E8EDF2", borderRadius: 12, padding: "20px 22px", margin: "6px 26px 18px" },
   costGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 250px))", gap: "0 16px", justifyContent: "start" },
   costNoteCell: { maxWidth: 516 },
-  costSaveBtn: { width: "auto", padding: "13px 34px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 14 },
+  costSaveBtn: { width: "auto", padding: "12px 32px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 14 },
   costFormRow: { display: "flex", gap: 12, flexWrap: "wrap" },
-  costHint: { fontSize: 14, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
+  costHint: { fontSize: 13, color: "#94A3B8", lineHeight: 1.8, margin: "14px 0 0" },
   addCampaignRow: { display: "flex", gap: 10, alignItems: "center", margin: "4px 26px 18px", maxWidth: 520 },
-  addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "13px 16px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 16, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
-  addCampaignBtn: { flexShrink: 0, width: "auto", padding: "13px 28px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
+  addCampaignInput: { flex: 1, minWidth: 0, width: "auto", padding: "12px 15px", borderRadius: 10, border: "1.5px solid #E2E8F0", fontSize: 15, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
+  addCampaignBtn: { flexShrink: 0, width: "auto", padding: "12px 26px", borderRadius: 10, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   campRow: { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", borderBottom: "1px solid #F8FAFC" },
-  campName: { background: "none", border: "none", padding: 0, fontSize: 17.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
-  campMeta: { fontSize: 14, color: "#94A3B8", marginTop: 4 },
-  campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 18px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
-  statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 15px", borderRadius: 20, fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" },
+  campName: { background: "none", border: "none", padding: 0, fontSize: 15.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
+  campMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 4 },
+  campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "9px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
+  statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 13px", borderRadius: 20, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" },
   statusDot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 },
-  backBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "none", color: KAPPA.tealDark, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: "4px 0", marginBottom: 10 },
+  backBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "none", color: KAPPA.tealDark, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: "4px 0", marginBottom: 10 },
   detailHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" },
   detailActions: { display: "flex", gap: 10, flexShrink: 0 },
   rowActions: { display: "inline-flex", gap: 8, justifyContent: "center" },
@@ -3440,33 +3554,33 @@ const styles = {
   kpiRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 16, marginBottom: 24 },
   kpi: { background: "#fff", borderRadius: 16, padding: "24px 26px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   kpiIcon: { width: 50, height: 50, borderRadius: 13, display: "grid", placeItems: "center", marginBottom: 16 },
-  kpiValue: { fontSize: 32, fontWeight: 800, color: KAPPA.ink, lineHeight: 1.15, wordBreak: "break-word" },
-  kpiValueText: { fontSize: 21, fontWeight: 800, lineHeight: 1.3, display: "inline-block" },
-  kpiLabel: { fontSize: 15, color: "#8695A8", marginTop: 8, fontWeight: 500 },
+  kpiValue: { fontSize: 30, fontWeight: 800, color: KAPPA.ink, lineHeight: 1.15, wordBreak: "break-word", fontVariantNumeric: "tabular-nums" },
+  kpiValueText: { fontSize: 20, fontWeight: 800, lineHeight: 1.3, display: "inline-block" },
+  kpiLabel: { fontSize: 14, color: "#8695A8", marginTop: 8, fontWeight: 500 },
   dashGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 },
   card: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
   cardHead: { padding: "22px 26px 14px" },
-  cardTitle: { fontSize: 19, fontWeight: 700, margin: 0, color: KAPPA.ink },
+  cardTitle: { fontSize: 18, fontWeight: 700, margin: 0, color: KAPPA.ink },
   barRow: { display: "flex", alignItems: "center", gap: 14, padding: "12px 26px" },
-  barLabel: { fontSize: 15.5, color: KAPPA.graphite, width: 118, flexShrink: 0, fontWeight: 600 },
+  barLabel: { fontSize: 15, color: KAPPA.graphite, width: 118, flexShrink: 0, fontWeight: 600 },
   barTrack: { flex: 1, height: 13, background: "#F1F5F9", borderRadius: 7, overflow: "hidden" },
   barFill: { height: "100%", borderRadius: 6, transition: "width .4s" },
-  barCount: { fontSize: 16, fontWeight: 800, color: KAPPA.ink, minWidth: 28, textAlign: "left" },
+  barCount: { fontSize: 15, fontVariantNumeric: "tabular-nums", fontWeight: 800, color: KAPPA.ink, minWidth: 28, textAlign: "left" },
   barRowLg: { display: "flex", alignItems: "center", gap: 16, padding: "13px 22px" },
-  barLabelLg: { fontSize: 15.5, color: KAPPA.graphite, width: 150, flexShrink: 0, fontWeight: 600 },
+  barLabelLg: { fontSize: 15, color: KAPPA.graphite, width: 150, flexShrink: 0, fontWeight: 600 },
   barTrackLg: { flex: 1, height: 15, background: "#F1F5F9", borderRadius: 8, overflow: "hidden" },
   barFillLg: { height: "100%", borderRadius: 8, transition: "width .4s" },
-  barCountLg: { fontSize: 16, fontWeight: 800, color: KAPPA.ink, minWidth: 34, textAlign: "left" },
+  barCountLg: { fontSize: 15, fontVariantNumeric: "tabular-nums", fontWeight: 800, color: KAPPA.ink, minWidth: 34, textAlign: "left" },
   recentRow: { width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 22px", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", cursor: "pointer", fontFamily: FONT, transition: "background .12s" },
   avatar: { width: 38, height: 38, borderRadius: 10, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 13.5, flexShrink: 0 },
   recentName: { fontSize: 14, fontWeight: 600, color: KAPPA.ink },
   recentMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 2 },
-  chip: { fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap" },
+  chip: { fontSize: 12.5, fontWeight: 700, padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap" },
   recentRowLg: { width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "16px 26px", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", cursor: "pointer", fontFamily: FONT, transition: "background .12s" },
-  avatarDash: { width: 46, height: 46, borderRadius: 12, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 },
-  recentNameLg: { fontSize: 16.5, fontWeight: 600, color: KAPPA.ink },
-  recentMetaLg: { fontSize: 14, color: "#94A3B8", marginTop: 3 },
-  chipLg: { fontSize: 13.5, fontWeight: 700, padding: "6px 14px", borderRadius: 20, whiteSpace: "nowrap" },
+  avatarDash: { width: 42, height: 42, borderRadius: 11, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 15, flexShrink: 0 },
+  recentNameLg: { fontSize: 15.5, fontWeight: 600, color: KAPPA.ink },
+  recentMetaLg: { fontSize: 13, color: "#94A3B8", marginTop: 3 },
+  chipLg: { fontSize: 12.5, fontWeight: 700, padding: "6px 14px", borderRadius: 20, whiteSpace: "nowrap" },
   board: { display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", paddingBottom: 10 },
   pipeHead: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 12 },
   pipeHeadMain: { display: "flex", alignItems: "flex-start", gap: 18, flexWrap: "wrap", flex: 1, minWidth: 0 },
@@ -3527,21 +3641,21 @@ const styles = {
   col: { width: 264, flexShrink: 0, background: "#EFF2F6", borderRadius: 14, padding: 10, maxHeight: "calc(100vh - 210px)", display: "flex", flexDirection: "column" },
   colHead: { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 4px" },
   colDot: { width: 9, height: 9, borderRadius: "50%" },
-  colTitle: { fontSize: 14, fontWeight: 700, color: KAPPA.ink, flex: 1 },
+  colTitle: { fontSize: 14.5, fontWeight: 700, color: KAPPA.ink, flex: 1 },
   colCount: { fontSize: 12.5, fontWeight: 700, color: "#94A3B8", background: "#fff", borderRadius: 20, padding: "2px 9px" },
-  colSum: { fontSize: 12, color: KAPPA.teal, fontWeight: 700, padding: "0 8px 8px" },
+  colSum: { fontSize: 12.5, color: KAPPA.teal, fontWeight: 700, padding: "0 8px 8px", fontVariantNumeric: "tabular-nums" },
   colBody: { display: "flex", flexDirection: "column", gap: 9, overflowY: "auto", flex: 1 },
   emptyCol: { textAlign: "center", fontSize: 12.5, color: "#B4C0CE", padding: "20px 0" },
   leadCard: { background: "#fff", borderRadius: 11, padding: "12px 13px", cursor: "pointer", borderRight: "3px solid", boxShadow: "0 1px 2px rgba(0,0,0,0.05)", transition: "all .15s" },
   leadCardTop: { display: "flex", alignItems: "center", gap: 9, marginBottom: 8 },
   avatarSm: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 11.5, flexShrink: 0 },
-  leadName: { fontSize: 14, fontWeight: 700, color: KAPPA.ink },
-  leadSummary: { fontSize: 12, color: "#7A8798", lineHeight: 1.55, margin: "0 0 9px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" },
+  leadName: { fontSize: 14.5, fontWeight: 700, color: KAPPA.ink },
+  leadSummary: { fontSize: 12.5, color: "#7A8798", lineHeight: 1.55, margin: "0 0 9px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" },
   leadTags: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 9 },
-  leadTag: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 600, color: KAPPA.graphite, background: "#F1F5F9", borderRadius: 6, padding: "3px 8px" },
+  leadTag: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11.5, fontWeight: 600, color: KAPPA.graphite, background: "#F1F5F9", borderRadius: 6, padding: "3px 8px" },
   leadFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  leadCampaign: { fontSize: 11.5, color: "#94A3B8", fontWeight: 500 },
-  leadCall: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600 },
+  leadCampaign: { fontSize: 12, color: "#94A3B8", fontWeight: 500 },
+  leadCall: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600 },
   journeyList: { display: "flex", flexDirection: "column", gap: 14 },
   journeyCard: { background: "#fff", borderRadius: 15, padding: "20px 22px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" },
   journeyHead: { display: "flex", alignItems: "center", gap: 13, marginBottom: 22 },
@@ -3570,17 +3684,17 @@ const styles = {
   drawerBody: { flex: 1, overflowY: "auto", overflowX: "hidden", padding: "22px", minWidth: 0 },
   drawerTop: { textAlign: "center", marginBottom: 20 },
   avatarLg: { width: 64, height: 64, borderRadius: 16, display: "grid", placeItems: "center", fontWeight: 800, fontSize: 22, margin: "0 auto 12px" },
-  drawerName: { fontSize: 20, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
-  drawerRef: { fontSize: 13, color: "#94A3B8" },
+  drawerName: { fontSize: 22, fontWeight: 800, margin: "0 0 4px", color: KAPPA.ink },
+  drawerRef: { fontSize: 13.5, color: "#94A3B8" },
   contactRow: { display: "flex", gap: 10, marginBottom: 20 },
-  contactBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px", borderRadius: 10, background: KAPPA.tealSoft, color: KAPPA.tealDark, textDecoration: "none", fontSize: 13, fontWeight: 600, direction: "ltr" },
+  contactBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px", borderRadius: 10, background: KAPPA.tealSoft, color: KAPPA.tealDark, textDecoration: "none", fontSize: 13.5, fontWeight: 600, direction: "ltr" },
   detailGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: "#F1F5F9", borderRadius: 12, overflow: "hidden", marginBottom: 18 },
   detail: { background: "#fff", padding: "13px 14px" },
-  detailLabel: { fontSize: 11.5, color: "#94A3B8", marginBottom: 5, fontWeight: 500 },
-  detailValue: { fontSize: 14, fontWeight: 700 },
+  detailLabel: { fontSize: 12, color: "#94A3B8", marginBottom: 5, fontWeight: 500 },
+  detailValue: { fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
   summaryBox: { background: "#F8FAFC", borderRadius: 12, padding: "15px 16px", marginBottom: 18 },
-  summaryLabel: { fontSize: 12, color: "#94A3B8", fontWeight: 600, marginBottom: 7 },
-  summaryText: { fontSize: 13.5, color: KAPPA.graphite, lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" },
+  summaryLabel: { fontSize: 12.5, color: "#94A3B8", fontWeight: 600, marginBottom: 7 },
+  summaryText: { fontSize: 14, color: KAPPA.graphite, lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" },
   summaryAddRow: { display: "flex", gap: 8, alignItems: "flex-end" },
   summaryAddInput: { flex: 1, minWidth: 0, padding: "9px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 13.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff", resize: "vertical", minHeight: 38, maxHeight: 120, lineHeight: 1.5 },
   summaryAddBtn: { flexShrink: 0, padding: "9px 16px", borderRadius: 9, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
@@ -3604,12 +3718,12 @@ const styles = {
   switchBtns: { display: "flex", flexWrap: "wrap", gap: 8 },
   switchBtn: { border: "2px solid transparent", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, transition: "all .15s" },
   centerState: { display: "flex", flexDirection: "column", alignItems: "center", gap: 14, padding: "70px 20px", textAlign: "center" },
-  stateText: { fontSize: 14.5, color: "#94A3B8", maxWidth: 340, lineHeight: 1.6 },
+  stateText: { fontSize: 14, color: "#94A3B8", maxWidth: 340, lineHeight: 1.6 },
   retryBtn: { border: "none", borderRadius: 9, padding: "10px 20px", background: KAPPA.teal, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
   field: { marginBottom: 14, flex: "1 1 160px", minWidth: 0 },
   fieldRow: { display: "flex", gap: 12, flexWrap: "wrap" },
-  fieldLabel: { display: "block", fontSize: 13, fontWeight: 600, color: KAPPA.graphite, marginBottom: 6 },
-  input: { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 14, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
+  fieldLabel: { display: "block", fontSize: 13.5, fontWeight: 600, color: KAPPA.graphite, marginBottom: 6 },
+  input: { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1.5px solid #E2E8F0", fontSize: 15, fontFamily: FONT, color: KAPPA.ink, background: "#fff", transition: "all .15s" },
   saveBtn: { width: "100%", padding: "13px", borderRadius: 11, background: KAPPA.teal, color: "#fff", border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 6 },
   cancelBtn: { padding: "13px 20px", borderRadius: 11, background: "#F1F5F9", color: KAPPA.graphite, border: "none", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: FONT, marginTop: 6 },
   editBtn: { display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 9, background: KAPPA.tealSoft, color: KAPPA.tealDark, border: "none", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
