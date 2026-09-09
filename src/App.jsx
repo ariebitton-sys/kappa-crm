@@ -26,6 +26,7 @@ const API = {
   summarize: `${API_BASE}/crm/lead/summarize`,
   users:    `${API_BASE}/crm/users`,
   userSave: `${API_BASE}/crm/user/save`,
+  userDelete: `${API_BASE}/crm/user/delete`,
 };
 
 // ============ Kappa brand ============
@@ -248,7 +249,7 @@ const roleLabel = (id) => (ROLES.find((r) => r.id === id) || ROLES[1]).label;
 const UsersCtx = React.createContext(null);
 function useUsers() {
   const v = React.useContext(UsersCtx);
-  return v || { rows: [], state: "idle", me: null, isAdmin: true, canEdit: true, emails: [], save: async () => false, reload: async () => {} };
+  return v || { rows: [], state: "idle", me: null, isAdmin: true, canEdit: true, emails: [], save: async () => false, remove: async () => false, reload: async () => {} };
 }
 
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
@@ -507,6 +508,22 @@ export default function App() {
     }
   }, []);
   useEffect(() => { if (session) loadUsers(); }, [session, loadUsers]);
+
+  const removeUser = useCallback(async (email) => {
+    try {
+      const res = await fetch(API.userDelete, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: String(email || "").toLowerCase().trim() }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json().catch(() => ({ ok: true }));
+      if (out && out.ok === false) throw new Error();
+      await loadUsers();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [loadUsers]);
 
   const saveUser = useCallback(async (row) => {
     try {
@@ -902,9 +919,9 @@ export default function App() {
       isAdmin: noRoster ? true : !!me && me.role === "admin" && me.active,
       canEdit: noRoster ? true : !!me && me.active && me.role !== "viewer",
       emails: owners,
-      save: saveUser, reload: loadUsers,
+      save: saveUser, remove: removeUser, reload: loadUsers,
     };
-  }, [userRows, userState, session, owners, saveUser, loadUsers]);
+  }, [userRows, userState, session, owners, saveUser, removeUser, loadUsers]);
 
   // One-click follow-up housekeeping from a card / table row, so the two most
   // common edits don't require opening the drawer.
@@ -935,14 +952,18 @@ export default function App() {
             <NavItem icon={<LayoutDashboard size={19} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <NavItem icon={<Users size={19} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
             <NavItem icon={<CalendarClock size={19} />} label="משימות" active={view === "tasks"} onClick={() => setView("tasks")} />
-            <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
+            {usersValue.isAdmin && (
+              <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
+            )}
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
             {usersValue.isAdmin && (
               <NavItem icon={<UserCog size={19} />} label="משתמשים" active={view === "users"} onClick={() => setView("users")} />
             )}
           </nav>
           <div style={styles.sidebarFoot}>
-            <button style={styles.addBtn} onClick={() => setAdding(true)}><Plus size={18} /> ליד חדש</button>
+            {usersValue.canEdit && (
+              <button style={styles.addBtn} onClick={() => setAdding(true)}><Plus size={18} /> ליד חדש</button>
+            )}
           </div>
         </aside>
       )}
@@ -956,9 +977,11 @@ export default function App() {
           <button style={styles.refreshBtn} onClick={refresh} title="רענן" aria-label="רענן">
             <RefreshCw size={16} className={refreshing || status === "loading" ? "spin" : ""} />
           </button>
-          <button style={styles.refreshBtn} onClick={() => setBinOpen(true)} title="סל המחיקות" aria-label="סל המחיקות">
-            <Archive size={16} />
-          </button>
+          {usersValue.isAdmin && (
+            <button style={styles.refreshBtn} onClick={() => setBinOpen(true)} title="סל המחיקות" aria-label="סל המחיקות">
+              <Archive size={16} />
+            </button>
+          )}
           {stats.dueCalls > 0 && (
             <div style={{ ...styles.dueBadge, ...(isMobile ? styles.dueBadgeMobile : {}) }}><CalendarClock size={16} />{isMobile ? ` ${stats.dueCalls}` : ` ${stats.dueCalls} שיחות להיום`}</div>
           )}
@@ -976,6 +999,18 @@ export default function App() {
         <div style={{ ...styles.content, ...(isMobile ? styles.contentMobile : {}) }}>
           {status === "loading" && <Loading />}
           {status === "error" && <ErrorState onRetry={() => loadLeads()} />}
+          {status === "ready" && !usersValue.canEdit && (
+            <div style={styles.dupBox}>
+              <AlertCircle size={15} />
+              <div>
+                <strong>הרשאת צפייה בלבד.</strong>
+                <div style={styles.dupRow}>
+                  אפשר לצפות בכל הנתונים, אבל לא לערוך לידים, לשנות שלבים או להוסיף רשומות.
+                  לשינוי ההרשאה יש לפנות למנהל המערכת.
+                </div>
+              </div>
+            </div>
+          )}
           {status === "ready" && view === "dashboard" && <Analytics stats={stats} leads={filtered} allLeads={leads} onOpen={setSelected} onFilterClick={goToFunnelFilter} session={session} flash={flash} />}
           {status === "ready" && view === "pipeline" && (
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
@@ -983,8 +1018,8 @@ export default function App() {
           {status === "ready" && view === "tasks" && (
             <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} />
           )}
-          {status === "ready" && view === "users" && <UsersAdmin session={session} flash={flash} leads={leads} />}
-          {status === "ready" && view === "campaigns" && (
+          {status === "ready" && view === "users" && usersValue.isAdmin && <UsersAdmin session={session} flash={flash} leads={leads} />}
+          {status === "ready" && view === "campaigns" && usersValue.isAdmin && (
             <CampaignsAdmin leads={leads} session={session} flash={flash} onRenameLeads={renameCampaignOnLeads} />
           )}
           {status === "ready" && view === "journey" && (
@@ -995,7 +1030,9 @@ export default function App() {
 
       {isMobile && (
         <>
-          <button style={styles.fab} onClick={() => setAdding(true)} aria-label="ליד חדש"><Plus size={26} /></button>
+          {usersValue.canEdit && (
+            <button style={styles.fab} onClick={() => setAdding(true)} aria-label="ליד חדש"><Plus size={26} /></button>
+          )}
           <nav style={styles.bottomNav}>
             <BottomNavItem icon={<LayoutDashboard size={22} />} label="דשבורד" active={view === "dashboard"} onClick={() => setView("dashboard")} />
             <BottomNavItem icon={<Users size={22} />} label="לידים" active={view === "pipeline"} onClick={() => setView("pipeline")} />
@@ -2632,10 +2669,16 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onS
 // (domain check); this screen decides what each person can do inside it and who
 // can be assigned leads and tasks.
 function UsersAdmin({ session, flash, leads }) {
-  const { rows, state, save, reload, me, isAdmin } = useUsers();
+  const { rows, state, save, remove, reload, me, isAdmin } = useUsers();
   const [form, setForm] = useState({ email: "", name: "", role: "sales" });
   const [busy, setBusy] = useState("");
   const [saving, setSaving] = useState(false);
+  // Inline rename of the display name. The email is the key the sheet row is
+  // matched on, so it can't be edited here — changing it would create a second
+  // row rather than rename the existing one.
+  const [editEmail, setEditEmail] = useState("");
+  const [nameDraft, setNameDraft] = useState("");
+  const [confirmDel, setConfirmDel] = useState("");
 
   // How much of the pipeline each person is carrying — the number that makes
   // deactivating someone a decision rather than a click.
@@ -2677,6 +2720,25 @@ function UsersAdmin({ session, flash, leads }) {
     const ok = await save({ ...row, ...changes });
     setBusy("");
     flash(ok ? "המשתמש עודכן" : "העדכון נכשל", ok ? "ok" : "err");
+  };
+
+  const commitName = async (row) => {
+    const name = nameDraft.trim();
+    setEditEmail("");
+    if (name === String(row.name || "").trim()) return;
+    await patch(row, { name });
+  };
+
+  // Deleting removes the row outright, so the button asks once first. Guarded
+  // against the two cases that would lock someone out: removing yourself, and
+  // removing the only active admin.
+  const removeRow = async (row) => {
+    if (confirmDel !== row.email) { setConfirmDel(row.email); return; }
+    setConfirmDel("");
+    setBusy(row.email);
+    const ok = await remove(row.email);
+    setBusy("");
+    flash(ok ? "המשתמש נמחק" : "המחיקה נכשלה", ok ? "ok" : "err");
   };
 
   return (
@@ -2776,7 +2838,28 @@ function UsersAdmin({ session, flash, leads }) {
                   return (
                     <tr key={u.email}>
                       <td style={styles.tdName}>
-                        <div>{u.name || u.email}</div>
+                        {editEmail === u.email ? (
+                          <input
+                            style={{ ...styles.input, maxWidth: 200 }}
+                            value={nameDraft}
+                            autoFocus
+                            disabled={busy === u.email}
+                            onChange={(e) => setNameDraft(e.target.value)}
+                            onBlur={() => commitName(u)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitName(u);
+                              if (e.key === "Escape") setEditEmail("");
+                            }}
+                            aria-label={`שם עבור ${u.email}`}
+                          />
+                        ) : (
+                          <button className="row-btn" style={styles.campName}
+                            disabled={!isAdmin}
+                            title={isAdmin ? "לחץ כדי לשנות את השם" : ""}
+                            onClick={() => { setNameDraft(u.name || ""); setEditEmail(u.email); }}>
+                            {u.name || u.email}
+                          </button>
+                        )}
                         <div style={styles.campMeta} dir="ltr">{u.email}{isMe ? " · אתה" : ""}</div>
                       </td>
                       <td style={styles.tdCenter}>
@@ -2799,17 +2882,32 @@ function UsersAdmin({ session, flash, leads }) {
                         </span>
                       </td>
                       <td style={styles.tdCenter}>
-                        <button
-                          style={{ ...styles.campToggleBtn, opacity: (busy === u.email || lastAdmin) ? 0.5 : 1,
-                            background: u.active ? "#F1F5F9" : KAPPA.tealSoft,
-                            color: u.active ? "#64748B" : KAPPA.tealDark,
-                            borderColor: u.active ? "#E2E8F0" : `${KAPPA.teal}55`,
-                            cursor: (busy === u.email || lastAdmin) ? "not-allowed" : "pointer" }}
-                          disabled={busy === u.email || lastAdmin}
-                          title={lastAdmin ? "אי אפשר להשבית את המנהל האחרון" : (stat.leads ? `למשתמש הזה ${stat.leads} לידים — שקלו להעביר אותם קודם` : "")}
-                          onClick={() => patch(u, { active: !u.active })}>
-                          <Power size={14} /> {busy === u.email ? "…" : (u.active ? "השבת" : "הפעל")}
-                        </button>
+                        <div style={styles.rowActions}>
+                          <button
+                            style={{ ...styles.campToggleBtn, opacity: (busy === u.email || lastAdmin) ? 0.5 : 1,
+                              background: u.active ? "#F1F5F9" : KAPPA.tealSoft,
+                              color: u.active ? "#64748B" : KAPPA.tealDark,
+                              borderColor: u.active ? "#E2E8F0" : `${KAPPA.teal}55`,
+                              cursor: (busy === u.email || lastAdmin) ? "not-allowed" : "pointer" }}
+                            disabled={busy === u.email || lastAdmin}
+                            title={lastAdmin ? "אי אפשר להשבית את המנהל האחרון" : (stat.leads ? `למשתמש הזה ${stat.leads} לידים — שקלו להעביר אותם קודם` : "")}
+                            onClick={() => patch(u, { active: !u.active })}>
+                            <Power size={14} /> {busy === u.email ? "…" : (u.active ? "השבת" : "הפעל")}
+                          </button>
+                          <button
+                            style={{ ...styles.campToggleBtn,
+                              opacity: (busy === u.email || lastAdmin || isMe) ? 0.5 : 1,
+                              background: confirmDel === u.email ? "#EF4444" : "#FEF2F2",
+                              color: confirmDel === u.email ? "#fff" : "#B91C1C",
+                              borderColor: confirmDel === u.email ? "#EF4444" : "#FECACA",
+                              cursor: (busy === u.email || lastAdmin || isMe) ? "not-allowed" : "pointer" }}
+                            disabled={busy === u.email || lastAdmin || isMe}
+                            title={isMe ? "אי אפשר למחוק את עצמך" : (lastAdmin ? "אי אפשר למחוק את המנהל האחרון" : (stat.leads ? `למשתמש הזה ${stat.leads} לידים — העבירו אותם קודם` : ""))}
+                            onClick={() => removeRow(u)}
+                            onBlur={() => setConfirmDel((v) => (v === u.email ? "" : v))}>
+                            <Trash2 size={14} /> {confirmDel === u.email ? "בטוח? לחץ שוב" : "מחק"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -2821,6 +2919,9 @@ function UsersAdmin({ session, flash, leads }) {
         <p style={styles.costHint}>
           השבתת משתמש חוסמת אותו מכניסה ומורידה אותו מרשימת הבעלים, אבל משאירה את
           הלידים והמשימות שכבר משויכים אליו — כדי שלא ייעלמו. העבירו אותם קודם למי שימשיך לטפל.
+          מחיקה מסירה את השורה לגמרי ולכן מבקשת אישור בלחיצה שנייה; אי אפשר למחוק את עצמך
+          או את המנהל האחרון. לחיצה על שם משתמש מאפשרת לערוך אותו — כתובת המייל היא המזהה
+          ולכן אינה ניתנת לשינוי, ולהחלפתה צריך למחוק ולהוסיף מחדש.
           <br />
           {ROLES.map((r) => `${r.label}: ${r.hint}`).join(" · ")}
         </p>
@@ -3178,6 +3279,9 @@ function StageHistory({ lead }) {
 // ============ Drawer ============
 function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, owners = [], onSaveTasks }) {
   const isMobile = useIsMobile();
+  // viewer (and anyone not on the roster) reads but does not write; deleting is
+  // an admin action, per the role descriptions in ROLES.
+  const { canEdit, isAdmin } = useUsers();
   const [editing, setEditing] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [f, setF] = useState(lead);
@@ -3334,7 +3438,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
             <MaximizeBtn />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button style={styles.editBtn} onClick={startEdit}><Pencil size={15} /> עריכה</button>
+            {canEdit && <button style={styles.editBtn} onClick={startEdit}><Pencil size={15} /> עריכה</button>}
             <div style={{ ...styles.chip, background: st.soft, color: st.color }}>{st.label}</div>
           </div>
         </div>
@@ -3396,23 +3500,25 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
                 <div style={styles.switchLabel}>סטטוס</div>
                 <div style={styles.switchBtns}>
                   {STAGES.map((s) => (
-                    <button key={s.id} onClick={() => onMove(s.id)} style={{
+                    <button key={s.id} onClick={() => canEdit && onMove(s.id)} disabled={!canEdit} style={{
                       ...styles.switchBtn,
                       background: lead.stage === s.id ? s.color : s.soft,
                       color: lead.stage === s.id ? "#fff" : s.color,
                       borderColor: lead.stage === s.id ? KAPPA.tealDark : "transparent",
+                      cursor: canEdit ? "pointer" : "not-allowed",
+                      opacity: canEdit || lead.stage === s.id ? 1 : 0.55,
                     }}>{s.label}</button>
                   ))}
                 </div>
               </div>
             );
-            const deleteBlock = (
+            const deleteBlock = isAdmin ? (
               <div style={styles.dangerZone}>
                 <button style={styles.deleteBtn} onClick={onRequestDelete}>
                   <Trash2 size={15} /> מחק ליד
                 </button>
               </div>
-            );
+            ) : null;
             return maximized ? (
               <div className="drawer-grid-2col">
                 <div>
