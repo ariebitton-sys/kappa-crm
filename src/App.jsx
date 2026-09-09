@@ -27,6 +27,9 @@ const API = {
   users:    `${API_BASE}/crm/users`,
   userSave: `${API_BASE}/crm/user/save`,
   userDelete: `${API_BASE}/crm/user/delete`,
+  taskTypes: `${API_BASE}/crm/task-types`,
+  taskTypeSave: `${API_BASE}/crm/task-type/save`,
+  taskTypeDelete: `${API_BASE}/crm/task-type/delete`,
 };
 
 // ============ Kappa brand ============
@@ -174,14 +177,31 @@ const DATE_FILTER_FIELDS = [
 // ride the existing update webhook — no new endpoint, and a task can never be
 // orphaned from its lead. next_call stays as the single "next touch" date; a
 // task is anything with an owner and a due date.
-const TASK_TYPES = [
-  { id: "call", label: "שיחה" },
-  { id: "email", label: "מייל" },
-  { id: "meeting", label: "פגישה" },
-  { id: "doc", label: "מסמכים" },
-  { id: "other", label: "אחר" },
+// Fallback only. Task types live in the TaskTypes tab and are fetched at
+// startup; this list keeps the task form usable if that fetch fails.
+// "other" is not a stored type — it's the free-text option in the UI.
+const TASK_TYPES_FALLBACK = [
+  { type_id: "call", label: "שיחה" },
+  { type_id: "email", label: "מייל" },
+  { type_id: "meeting", label: "פגישה" },
+  { type_id: "doc", label: "מסמכים" },
 ];
-const taskTypeLabel = (id) => (TASK_TYPES.find((t) => t.id === id) || TASK_TYPES[4]).label;
+const OTHER_TASK = "other";
+const DEFAULT_TASK_OWNER = "ofer@kappainv.com";
+
+const TaskTypesCtx = React.createContext(null);
+function useTaskTypes() {
+  const v = React.useContext(TaskTypesCtx);
+  if (v) return v;
+  return { rows: TASK_TYPES_FALLBACK, active: TASK_TYPES_FALLBACK, state: "idle",
+    label: (id) => (TASK_TYPES_FALLBACK.find((t) => t.type_id === id) || {}).label || "אחר",
+    save: async () => false, remove: async () => false, reload: async () => {} };
+}
+// Assignee display: name when we know it, email otherwise.
+const ownerLabel = (email, userRows) => {
+  const hit = (userRows || []).find((u) => u.email === String(email || "").toLowerCase());
+  return (hit && String(hit.name || "").trim()) || email;
+};
 function parseTasks(lead) {
   let raw = lead && lead.tasks;
   if (typeof raw === "string" && raw.trim()) {
@@ -508,6 +528,69 @@ export default function App() {
     }
   }, []);
   useEffect(() => { if (session) loadUsers(); }, [session, loadUsers]);
+
+  // ---- Task types (shared by the task form and the tasks screen) ----
+  const [taskTypeRows, setTaskTypeRows] = useState([]);
+  const [taskTypeState, setTaskTypeState] = useState("idle");
+
+  const loadTaskTypes = useCallback(async () => {
+    setTaskTypeState("loading");
+    try {
+      const res = await fetch(API.taskTypes);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      const list = Array.isArray(d) ? d : (d.taskTypes || []);
+      setTaskTypeRows(list.filter((t) => t && t.type_id && t.label));
+      setTaskTypeState("ready");
+    } catch {
+      setTaskTypeState("error");
+    }
+  }, []);
+  useEffect(() => { if (session) loadTaskTypes(); }, [session, loadTaskTypes]);
+
+  const saveTaskType = useCallback(async (row) => {
+    try {
+      const res = await fetch(API.taskTypeSave, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(row),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      await loadTaskTypes();
+      return true;
+    } catch { return false; }
+  }, [loadTaskTypes]);
+
+  const removeTaskType = useCallback(async (typeId) => {
+    try {
+      const res = await fetch(API.taskTypeDelete, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type_id: typeId }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+      await loadTaskTypes();
+      return true;
+    } catch { return false; }
+  }, [loadTaskTypes]);
+
+  const taskTypesValue = useMemo(() => {
+    const usable = taskTypeState === "ready" && taskTypeRows.length > 0;
+    const rows = usable ? taskTypeRows : TASK_TYPES_FALLBACK;
+    const active = rows.filter((t) => t.active !== false);
+    return {
+      rows, active, state: taskTypeState,
+      // Falls back to the stored id rather than a generic label, so a task whose
+      // type was deleted still shows something meaningful instead of "אחר".
+      label: (id) => {
+        const hit = rows.find((t) => t.type_id === id);
+        return hit ? hit.label : (id ? String(id) : "אחר");
+      },
+      save: saveTaskType, remove: removeTaskType, reload: loadTaskTypes,
+    };
+  }, [taskTypeRows, taskTypeState, saveTaskType, removeTaskType, loadTaskTypes]);
 
   const removeUser = useCallback(async (email) => {
     try {
@@ -940,6 +1023,7 @@ export default function App() {
     <CampaignsCtx.Provider value={campaignsValue}>
     <StatsCtx.Provider value={statsValue}>
     <UsersCtx.Provider value={usersValue}>
+    <TaskTypesCtx.Provider value={taskTypesValue}>
     <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
 
@@ -1016,7 +1100,7 @@ export default function App() {
             <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
           )}
           {status === "ready" && view === "tasks" && (
-            <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} />
+            <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} flash={flash} />
           )}
           {status === "ready" && view === "users" && usersValue.isAdmin && <UsersAdmin session={session} flash={flash} leads={leads} />}
           {status === "ready" && view === "campaigns" && usersValue.isAdmin && (
@@ -1091,6 +1175,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </TaskTypesCtx.Provider>
     </UsersCtx.Provider>
     </StatsCtx.Provider>
     </CampaignsCtx.Provider>
@@ -2934,7 +3019,8 @@ function UsersAdmin({ session, flash, leads }) {
 // ============ Tasks ============
 // Every open task across every lead, in one list. This is the screen a sales
 // person lives in: what is due today, what slipped, and whose it is.
-function TasksBoard({ leads, session, onOpen, onToggle, onSnooze }) {
+function TasksBoard({ leads, session, onOpen, onToggle, onSnooze, flash }) {
+  const { label: typeLabel } = useTaskTypes();
   const me = (session && session.email) || "";
   const [scope, setScope] = useState("mine"); // mine | all
   const [showDone, setShowDone] = useState(false);
@@ -3002,7 +3088,7 @@ function TasksBoard({ leads, session, onOpen, onToggle, onSnooze }) {
                     {task.title}
                   </div>
                   <div style={styles.taskMeta}>
-                    {taskTypeLabel(task.type)} · <button className="row-btn" style={styles.taskLeadLink} onClick={() => onOpen(lead)}>{lead.name}</button>
+                    {typeLabel(task.type)} · <button className="row-btn" style={styles.taskLeadLink} onClick={() => onOpen(lead)}>{lead.name}</button>
                     {task.owner ? ` · ${task.owner}` : ""}
                   </div>
                 </div>
@@ -3017,6 +3103,125 @@ function TasksBoard({ leads, session, onOpen, onToggle, onSnooze }) {
           })}
         </div>
       )}
+      <TaskTypesManager flash={flash} />
+    </div>
+  );
+}
+
+// Editing the list of task types available in every lead's task form.
+// Renaming keeps the type's id, so tasks already recorded against it follow the
+// new name instead of losing their type.
+function TaskTypesManager({ flash }) {
+  const { rows, state, save, remove, reload } = useTaskTypes();
+  const { isAdmin } = useUsers();
+  const [newLabel, setNewLabel] = useState("");
+  const [busy, setBusy] = useState("");
+  const [editId, setEditId] = useState("");
+  const [draft, setDraft] = useState("");
+  const [confirmDel, setConfirmDel] = useState("");
+
+  if (!isAdmin) return null;
+
+  const addType = async () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    if (rows.some((t) => t.label === label)) { flash("סוג משימה בשם הזה כבר קיים", "err"); return; }
+    setBusy("add");
+    const ok = await save({ label, active: true, sort: (rows.length + 1) * 10 });
+    setBusy("");
+    if (ok) { setNewLabel(""); flash("סוג המשימה נוסף"); } else flash("ההוספה נכשלה", "err");
+  };
+
+  const commit = async (row) => {
+    const label = draft.trim();
+    setEditId("");
+    if (!label || label === row.label) return;
+    setBusy(row.type_id);
+    const ok = await save({ ...row, label });
+    setBusy("");
+    flash(ok ? "השם עודכן" : "העדכון נכשל", ok ? "ok" : "err");
+  };
+
+  const removeType = async (row) => {
+    if (confirmDel !== row.type_id) { setConfirmDel(row.type_id); return; }
+    setConfirmDel("");
+    setBusy(row.type_id);
+    const ok = await remove(row.type_id);
+    setBusy("");
+    flash(ok ? "סוג המשימה נמחק" : "המחיקה נכשלה", ok ? "ok" : "err");
+  };
+
+  return (
+    <div style={{ ...styles.card, marginTop: 24 }}>
+      <div style={styles.cardHead}><h3 style={styles.cardTitle}>סוגי משימות</h3></div>
+
+      <div style={styles.addCampaignRow}>
+        <input style={styles.addCampaignInput} placeholder="סוג משימה חדש…" value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addType(); }} />
+        <button style={{ ...styles.addCampaignBtn, opacity: busy === "add" || !newLabel.trim() ? 0.5 : 1 }}
+          disabled={busy === "add" || !newLabel.trim()} onClick={addType}>
+          {busy === "add" ? "מוסיף…" : "הוסף"}
+        </button>
+      </div>
+
+      {state === "error" && (
+        <div style={styles.centerState}>
+          <AlertCircle size={30} color="#EF4444" />
+          <p style={styles.stateText}>לא הצלחנו לטעון את סוגי המשימות.</p>
+          <button style={styles.retryBtn} onClick={reload}>נסה שוב</button>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={styles.statTable}>
+            <thead>
+              <tr>
+                <th style={styles.th}>סוג המשימה</th>
+                <th style={styles.thCenter}>פעולות</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t) => (
+                <tr key={t.type_id}>
+                  <td style={styles.tdName}>
+                    {editId === t.type_id ? (
+                      <input style={{ ...styles.input, maxWidth: 220 }} value={draft} autoFocus
+                        onChange={(e) => setDraft(e.target.value)}
+                        onBlur={() => commit(t)}
+                        onKeyDown={(e) => { if (e.key === "Enter") commit(t); if (e.key === "Escape") setEditId(""); }} />
+                    ) : (
+                      <button className="row-btn" style={styles.campName} title="לחץ כדי לשנות את השם"
+                        onClick={() => { setDraft(t.label); setEditId(t.type_id); }}>
+                        {t.label}
+                      </button>
+                    )}
+                  </td>
+                  <td style={styles.tdCenter}>
+                    <button
+                      style={{ ...styles.campToggleBtn,
+                        opacity: busy === t.type_id ? 0.5 : 1,
+                        background: confirmDel === t.type_id ? "#EF4444" : "#FEF2F2",
+                        color: confirmDel === t.type_id ? "#fff" : "#B91C1C",
+                        borderColor: confirmDel === t.type_id ? "#EF4444" : "#FECACA" }}
+                      disabled={busy === t.type_id}
+                      onClick={() => removeType(t)}
+                      onBlur={() => setConfirmDel((v) => (v === t.type_id ? "" : v))}>
+                      <Trash2 size={14} /> {confirmDel === t.type_id ? "בטוח? לחץ שוב" : "מחק"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p style={styles.costHint}>
+        הסוגים כאן הם אלה שיוצעו בבורר המשימות בתוך כל ליד. לחיצה על שם מאפשרת לערוך אותו.
+        מחיקת סוג לא משנה משימות שכבר נוצרו — הן ימשיכו להציג את השם שנשמר בהן.
+        בנוסף לסוגים האלה קיימת תמיד האפשרות "אחר", שפותחת שדה להקלדת שם חופשי.
+      </p>
     </div>
   );
 }
@@ -3024,18 +3229,36 @@ function TasksBoard({ leads, session, onOpen, onToggle, onSnooze }) {
 // Tasks for a single lead, inside the drawer.
 function TasksBlock({ lead, owners, session, onSaveTasks }) {
   const tasks = parseTasks(lead);
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("call");
+  const { active: taskTypes, label: typeLabel } = useTaskTypes();
+  const { rows: userRows } = useUsers();
+  const [type, setType] = useState("");
+  const [customTitle, setCustomTitle] = useState("");
   const [due, setDue] = useState("");
-  const [owner, setOwner] = useState((session && session.email) || "");
+  // Follow-ups are handled by Ofer by default; fall back to the signed-in user
+  // if he isn't an assignable owner in this workspace.
+  const [owner, setOwner] = useState(
+    owners.includes(DEFAULT_TASK_OWNER) ? DEFAULT_TASK_OWNER : ((session && session.email) || "")
+  );
   const [saving, setSaving] = useState(false);
 
+  // Keep the selection valid once the types finish loading.
+  useEffect(() => {
+    if (!type && taskTypes.length) setType(taskTypes[0].type_id);
+  }, [taskTypes, type]);
+
+  const isOther = type === OTHER_TASK;
+  // The chosen type is the task's name; "אחר" swaps in whatever was typed.
+  const resolvedTitle = isOther ? customTitle.trim() : (typeLabel(type) || "");
+  const canAdd = resolvedTitle !== "" && !saving;
+
   const add = async () => {
-    const t = title.trim();
-    if (!t || saving) return;
+    if (!canAdd) return;
     setSaving(true);
-    await onSaveTasks(lead, [...tasks, { id: newTaskId(), title: t, type, due, owner, done: false, created_at: todayStr() }]);
-    setTitle(""); setDue("");
+    await onSaveTasks(lead, [...tasks, {
+      id: newTaskId(), title: resolvedTitle, type, due, owner,
+      done: false, created_at: todayStr(),
+    }]);
+    setCustomTitle(""); setDue("");
     setSaving(false);
   };
   const toggle = (id) => onSaveTasks(lead, tasks.map((x) => (x.id === id
@@ -3062,7 +3285,7 @@ function TasksBlock({ lead, owners, session, onSaveTasks }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ ...styles.taskMiniTitle, textDecoration: t.done ? "line-through" : "none", color: t.done ? "#94A3B8" : KAPPA.ink }}>{t.title}</div>
               <div style={styles.taskMiniMeta}>
-                {taskTypeLabel(t.type)}{t.due ? ` · ${t.due}` : ""}{t.owner ? ` · ${t.owner}` : ""}
+                {typeLabel(t.type)}{t.due ? ` · ${t.due}` : ""}{t.owner ? ` · ${ownerLabel(t.owner, userRows)}` : ""}
               </div>
             </div>
             {late && <span style={styles.taskLate}>באיחור</span>}
@@ -3070,23 +3293,28 @@ function TasksBlock({ lead, owners, session, onSaveTasks }) {
           </div>
         );
       })}
-      <div style={styles.taskAddGrid} className="task-add-grid">
-        <input style={styles.input} placeholder="משימה חדשה…" value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+      <div
+        style={{ ...styles.taskAddGrid, gridTemplateColumns: isOther ? "1fr 1.6fr 1.2fr" : "1fr 1.2fr" }}
+        className="task-add-grid">
         <select style={styles.input} value={type} onChange={(e) => setType(e.target.value)} aria-label="סוג משימה">
-          {TASK_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          {taskTypes.map((t) => <option key={t.type_id} value={t.type_id}>{t.label}</option>)}
+          <option value={OTHER_TASK}>אחר…</option>
         </select>
+        {isOther && (
+          <input style={styles.input} placeholder="שם המשימה…" value={customTitle} autoFocus
+            onChange={(e) => setCustomTitle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        )}
         <select style={styles.input} value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="אחראי">
-          {owners.map((o) => <option key={o} value={o}>{o}</option>)}
+          {owners.map((o) => <option key={o} value={o}>{ownerLabel(o, userRows)}</option>)}
         </select>
       </div>
       <div style={styles.taskAddFoot}>
         <div style={{ flex: 1, minWidth: 160 }}>
           <DateField label="מועד יעד" value={due} onChange={setDue} />
         </div>
-        <button style={{ ...styles.summaryAddBtn, opacity: title.trim() && !saving ? 1 : 0.5, cursor: title.trim() && !saving ? "pointer" : "not-allowed" }}
-          disabled={!title.trim() || saving} onClick={add}>
+        <button style={{ ...styles.summaryAddBtn, opacity: canAdd ? 1 : 0.5, cursor: canAdd ? "pointer" : "not-allowed" }}
+          disabled={!canAdd} onClick={add}>
           {saving ? "שומר…" : "הוסף משימה"}
         </button>
       </div>
