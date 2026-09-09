@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Plus, X, Phone, Mail, Search,
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
-  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, LogOut,
+  Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, LogOut, UserCog,
   Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power
 } from "lucide-react";
 
@@ -24,6 +24,8 @@ const API = {
   campaigns: `${API_BASE}/crm/campaigns`,
   campaignSave: `${API_BASE}/crm/campaign/save`,
   summarize: `${API_BASE}/crm/lead/summarize`,
+  users:    `${API_BASE}/crm/users`,
+  userSave: `${API_BASE}/crm/user/save`,
 };
 
 // ============ Kappa brand ============
@@ -231,6 +233,24 @@ function loadFx() {
   return DEFAULT_FX;
 }
 
+// ---- Users ----------------------------------------------------------------
+// The team roster: who may sign in, what they may do, and who can own leads and
+// tasks. Google sign-in still gates the domain; this decides the role inside it.
+// If /crm/users isn't deployed yet the app keeps working — it derives a roster
+// from existing lead owners and treats the signed-in user as an admin, so a
+// missing endpoint degrades instead of locking anyone out.
+const ROLES = [
+  { id: "admin",  label: "מנהל",     hint: "גישה מלאה, כולל ניהול משתמשים, קמפיינים ומחיקות" },
+  { id: "sales",  label: "מכירות",   hint: "עבודה מלאה על לידים ומשימות, בלי ניהול משתמשים" },
+  { id: "viewer", label: "צפייה",    hint: "צפייה בלבד — בלי עריכה, מחיקה או שינוי שלבים" },
+];
+const roleLabel = (id) => (ROLES.find((r) => r.id === id) || ROLES[1]).label;
+const UsersCtx = React.createContext(null);
+function useUsers() {
+  const v = React.useContext(UsersCtx);
+  return v || { rows: [], state: "idle", me: null, isAdmin: true, canEdit: true, emails: [], save: async () => false, reload: async () => {} };
+}
+
 const TRACKS = ["Brick Capital", "Multi Single", "Fix and Flip", "Loan - 8%"];
 // Tracks that support compound interest (ריבית דריבית). Only these show the toggle.
 const COMPOUND_TRACKS = ["Multi Single", "Brick Capital"];
@@ -414,7 +434,7 @@ export default function App() {
     const apply = () => {
       const p = new URLSearchParams(window.location.search);
       const v = p.get("view");
-      if (["dashboard", "pipeline", "tasks", "campaigns", "journey"].includes(v)) setView(v);
+      if (["dashboard", "pipeline", "tasks", "campaigns", "users", "journey"].includes(v)) setView(v);
     };
     apply();
     window.addEventListener("popstate", apply);
@@ -463,6 +483,46 @@ export default function App() {
     const active = usable ? campaignRows.filter((c) => c.active).map((c) => c.name) : CAMPAIGNS_FALLBACK;
     return { rows: campaignRows, all, active, reload: loadCampaigns, save: saveCampaign, state: campaignState };
   }, [campaignRows, campaignState, loadCampaigns]);
+
+  // ---- Users (team roster + roles) ----
+  const [userRows, setUserRows] = useState([]);
+  const [userState, setUserState] = useState("idle");
+  const loadUsers = useCallback(async () => {
+    setUserState("loading");
+    try {
+      const res = await fetch(API.users);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      const rows = (Array.isArray(d) ? d : d.users || []).map((u) => ({
+        email: String(u.email || "").toLowerCase().trim(),
+        name: u.name || "",
+        role: ROLES.some((r) => r.id === u.role) ? u.role : "sales",
+        active: u.active === false || u.active === "false" ? false : true,
+        created_at: u.created_at || "",
+      })).filter((u) => u.email);
+      setUserRows(rows);
+      setUserState(rows.length ? "ready" : "empty");
+    } catch {
+      setUserState("error");
+    }
+  }, []);
+  useEffect(() => { if (session) loadUsers(); }, [session, loadUsers]);
+
+  const saveUser = useCallback(async (row) => {
+    try {
+      const res = await fetch(API.userSave, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...row, email: String(row.email || "").toLowerCase().trim(), created_by: (session && session.email) || "" }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json().catch(() => ({ ok: true }));
+      if (out && out.ok === false) throw new Error();
+      await loadUsers();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [session, loadUsers]);
 
   // ---- Stats (events + costs), fetched once and shared ----
   const [statsData, setStatsData] = useState({ events: [], costs: [] });
@@ -819,16 +879,32 @@ export default function App() {
       return { ...t, due: fmtDMY(base) };
     }));
 
-  // Everyone who already owns a lead or a task, plus whoever is signed in.
+  // Assignable owners: active users from the roster, plus anyone already
+  // carrying leads or tasks (so historical assignments never disappear).
   const owners = useMemo(() => {
     const set = new Set();
+    userRows.filter((u) => u.active).forEach((u) => set.add(u.email));
     leads.forEach((l) => {
       if (l.owner) set.add(String(l.owner));
       parseTasks(l).forEach((t) => { if (t.owner) set.add(String(t.owner)); });
     });
-    set.add(session && session.email ? session.email : "");
+    if (session && session.email) set.add(session.email);
     return Array.from(set).filter(Boolean).sort();
-  }, [leads, session]);
+  }, [userRows, leads, session]);
+
+  const usersValue = useMemo(() => {
+    const email = ((session && session.email) || "").toLowerCase();
+    const me = userRows.find((u) => u.email === email) || null;
+    // No roster yet (endpoint missing or sheet empty) → don't lock anyone out.
+    const noRoster = userState !== "ready";
+    return {
+      rows: userRows, state: userState, me,
+      isAdmin: noRoster ? true : !!me && me.role === "admin" && me.active,
+      canEdit: noRoster ? true : !!me && me.active && me.role !== "viewer",
+      emails: owners,
+      save: saveUser, reload: loadUsers,
+    };
+  }, [userRows, userState, session, owners, saveUser, loadUsers]);
 
   // One-click follow-up housekeeping from a card / table row, so the two most
   // common edits don't require opening the drawer.
@@ -846,6 +922,7 @@ export default function App() {
   return (
     <CampaignsCtx.Provider value={campaignsValue}>
     <StatsCtx.Provider value={statsValue}>
+    <UsersCtx.Provider value={usersValue}>
     <div dir="rtl" style={{ ...styles.app, ...(isMobile ? styles.appMobile : {}) }}>
       <style>{css}</style>
 
@@ -860,6 +937,9 @@ export default function App() {
             <NavItem icon={<CalendarClock size={19} />} label="משימות" active={view === "tasks"} onClick={() => setView("tasks")} />
             <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
+            {usersValue.isAdmin && (
+              <NavItem icon={<UserCog size={19} />} label="משתמשים" active={view === "users"} onClick={() => setView("users")} />
+            )}
           </nav>
           <div style={styles.sidebarFoot}>
             <button style={styles.addBtn} onClick={() => setAdding(true)}><Plus size={18} /> ליד חדש</button>
@@ -903,6 +983,7 @@ export default function App() {
           {status === "ready" && view === "tasks" && (
             <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} />
           )}
+          {status === "ready" && view === "users" && <UsersAdmin session={session} flash={flash} leads={leads} />}
           {status === "ready" && view === "campaigns" && (
             <CampaignsAdmin leads={leads} session={session} flash={flash} onRenameLeads={renameCampaignOnLeads} />
           )}
@@ -973,6 +1054,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </UsersCtx.Provider>
     </StatsCtx.Provider>
     </CampaignsCtx.Provider>
   );
@@ -1240,7 +1322,8 @@ function CampaignDetail({ campaign, leads, costs, costState, onBack, onSaveCost,
 
       <div style={styles.card}>
         <div style={styles.cardHead}>
-          <h3 style={styles.cardTitle}>{editing ? "עריכת חיוב" : "הוספת חיוב"}</h3>
+          <h3 style={styles.cardTitle}>{editing ? "עריכת חיוב" : "הוספת עלות לקמפיין"}</h3>
+          <span style={styles.cardHint}>{editing ? "עריכת חיוב קיים" : "תאריך, סכום ומטבע — החיוב יישמר תחת הקמפיין הזה"}</span>
         </div>
         <div style={styles.costForm} className="cost-form-lg">
           <div style={styles.costGrid}>
@@ -1452,6 +1535,20 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
       res.failed ? "err" : "ok");
   };
 
+  // Cost totals per campaign, so the list itself shows where money went and the
+  // "add cost" action has a visible consequence.
+  const costByCampaign = useMemo(() => {
+    const out = {};
+    costs.forEach((c) => {
+      const key = String(c.campaign || "").trim();
+      if (!key) return;
+      const cur = String(c.currency || "ILS").toUpperCase() === "USD" ? "USD" : "ILS";
+      out[key] = out[key] || {};
+      out[key][cur] = (out[key][cur] || 0) + (Number(c.amount) || 0);
+    });
+    return out;
+  }, [costs]);
+
   const openCampaign = rows.find((r) => r.campaign_id === openId) || null;
   if (openCampaign) {
     return (
@@ -1519,6 +1616,7 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
                   <th style={styles.th}>שם הקמפיין</th>
                   <th style={styles.thCenter}>סטטוס</th>
                   <th style={styles.thCenter}>כמות לידים</th>
+                  <th style={styles.thCenter}>עלות מתועדת</th>
                   <th style={styles.thCenter}>פעולות</th>
                 </tr>
               </thead>
@@ -1527,7 +1625,7 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
                   <tr key={r.campaign_id}>
                     <td style={styles.tdName}>
                       <button className="row-btn" style={styles.campName}
-                        title="פתח את הקמפיין"
+                        title="פתח את הקמפיין — עלויות, ביצועים והיסטוריית חיובים"
                         onClick={() => setOpenId(r.campaign_id)}>
                         {r.name}
                       </button>
@@ -1543,7 +1641,16 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
                       </span>
                     </td>
                     <td style={styles.tdCenter}>{usage[r.name] || 0}</td>
+                    <td style={styles.tdCenter} title={fxBreakdown(costByCampaign[r.name] || {})}>
+                      {hasCost(costByCampaign[r.name] || {}) ? fxMoney(totalIn(costByCampaign[r.name], fx), fx) : "—"}
+                    </td>
                     <td style={styles.tdCenter}>
+                      <div style={styles.campActions}>
+                      <button style={styles.campCostBtn}
+                        onClick={() => setOpenId(r.campaign_id)}
+                        title="הוסף או ערוך עלות לקמפיין הזה">
+                        <Wallet size={14} /> הוסף עלות
+                      </button>
                       <button
                         style={{ ...styles.campToggleBtn, opacity: busy === r.campaign_id ? 0.5 : 1,
                           background: r.active ? "#F1F5F9" : KAPPA.tealSoft,
@@ -1553,6 +1660,7 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
                         onClick={() => toggleActive(r)}>
                         <Power size={14} /> {busy === r.campaign_id ? "…" : (r.active ? "השבת" : "הפעל")}
                       </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1564,8 +1672,8 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
           <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין קמפיינים. הוסף אחד למעלה.</div>
         )}
         <p style={styles.costHint}>
-          כל תיעוד העלויות נעשה בתוך כרטיס הקמפיין — לחיצה על שם קמפיין פותחת אותו, עם
-          היסטוריית החיובים וסך ההשקעה. השבתה מסתירה את
+          תיעוד עלויות: לחצו על <strong>הוסף עלות</strong> בשורת הקמפיין (או על שם הקמפיין) —
+          הכרטיס שנפתח כולל את טופס החיוב, היסטוריית החיובים וסך ההשקעה. השבתה מסתירה את
           הקמפיין מטופס ליד חדש, אבל משאירה אותו על לידים קיימים ובסטטיסטיקות, כך
           שהיסטוריה לא הולכת לאיבוד.
         </p>
@@ -2514,6 +2622,209 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onS
       <div className="card-quick" style={{ ...styles.quickRow, ...(isMobile ? { opacity: 1 } : {}) }} onPointerDown={(e) => e.stopPropagation()}>
         <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}>דובר היום</button>
         <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onSnooze && onSnooze(lead, 1); }}>דחה יום</button>
+      </div>
+    </div>
+  );
+}
+
+// ============ Users ============
+// The team roster. Google sign-in still decides who may reach the app at all
+// (domain check); this screen decides what each person can do inside it and who
+// can be assigned leads and tasks.
+function UsersAdmin({ session, flash, leads }) {
+  const { rows, state, save, reload, me, isAdmin } = useUsers();
+  const [form, setForm] = useState({ email: "", name: "", role: "sales" });
+  const [busy, setBusy] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // How much of the pipeline each person is carrying — the number that makes
+  // deactivating someone a decision rather than a click.
+  const load = useMemo(() => {
+    const out = {};
+    leads.forEach((l) => {
+      const o = String(l.owner || "").toLowerCase();
+      if (!o) return;
+      out[o] = out[o] || { leads: 0, tasks: 0 };
+      out[o].leads++;
+    });
+    leads.forEach((l) => parseTasks(l).forEach((t) => {
+      if (t.done) return;
+      const o = String(t.owner || l.owner || "").toLowerCase();
+      if (!o) return;
+      out[o] = out[o] || { leads: 0, tasks: 0 };
+      out[o].tasks++;
+    }));
+    return out;
+  }, [leads]);
+
+  const unassigned = leads.filter((l) => !String(l.owner || "").trim()).length;
+
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(form.email.trim());
+  const domainOk = form.email.trim().toLowerCase().endsWith("@" + ALLOWED_DOMAIN);
+  const exists = rows.some((u) => u.email === form.email.trim().toLowerCase());
+
+  const addUser = async () => {
+    if (!emailOk || !domainOk || exists || saving) return;
+    setSaving(true);
+    const ok = await save({ email: form.email.trim(), name: form.name.trim(), role: form.role, active: true, created_at: todayStr() });
+    setSaving(false);
+    if (ok) { setForm({ email: "", name: "", role: "sales" }); flash("המשתמש נוסף"); }
+    else flash("הוספת המשתמש נכשלה", "err");
+  };
+
+  const patch = async (row, changes) => {
+    setBusy(row.email);
+    const ok = await save({ ...row, ...changes });
+    setBusy("");
+    flash(ok ? "המשתמש עודכן" : "העדכון נכשל", ok ? "ok" : "err");
+  };
+
+  return (
+    <div>
+      <h1 style={styles.pageTitle}>משתמשים</h1>
+      <p style={styles.pageSub}>מי מורשה להשתמש במערכת, באיזה תפקיד, ומי אחראי על מה</p>
+
+      {state === "error" && (
+        <div style={styles.dupBox}>
+          <AlertCircle size={15} />
+          <div>
+            <strong>ניהול המשתמשים עוד לא מחובר לשרת.</strong>
+            <div style={styles.dupRow}>
+              עד שיוגדרו ה-webhooks <code>crm/users</code> ו-<code>crm/user/save</code>, כל מי שמתחבר
+              עם כתובת {"@" + ALLOWED_DOMAIN} מקבל גישה מלאה.
+            </div>
+          </div>
+        </div>
+      )}
+      {state === "empty" && (
+        <div style={styles.dupBox}>
+          <AlertCircle size={15} />
+          <div>
+            <strong>הרשימה ריקה.</strong>
+            <div style={styles.dupRow}>
+              כל עוד אין אף משתמש מוגדר, כל מי שמתחבר מקבל גישה מלאה. הוסיפו את עצמכם
+              כמנהל ראשון כדי להתחיל לאכוף תפקידים.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={styles.kpiRow} className="kpi-row">
+        <Kpi icon={<Users size={20} />} tint={KAPPA.teal} label="משתמשים פעילים" value={rows.filter((u) => u.active).length} />
+        <Kpi icon={<UserCog size={20} />} tint="#6366F1" label="מנהלים" value={rows.filter((u) => u.active && u.role === "admin").length} />
+        <Kpi icon={<AlertCircle size={20} />} tint="#F59E0B" label="לידים בלי בעלים" value={unassigned} />
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardHead}>
+          <h3 style={styles.cardTitle}>הוספת משתמש</h3>
+          <span style={styles.cardHint}>רק כתובות {"@" + ALLOWED_DOMAIN} — ההתחברות עצמה נעשית דרך Google</span>
+        </div>
+        <div style={styles.userAddGrid} className="user-add-grid">
+          <Field label="אימייל">
+            <input style={{ ...styles.input, ...(form.email && !(emailOk && domainOk) ? styles.inputInvalid : {}) }}
+              dir="ltr" placeholder={"name@" + ALLOWED_DOMAIN} value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            {form.email && !emailOk && <div style={styles.fieldError}>כתובת אימייל לא תקינה</div>}
+            {form.email && emailOk && !domainOk && <div style={styles.fieldError}>הגישה מוגבלת לדומיין {ALLOWED_DOMAIN}</div>}
+            {exists && <div style={styles.fieldError}>המשתמש כבר קיים ברשימה</div>}
+          </Field>
+          <Field label="שם לתצוגה">
+            <input style={styles.input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </Field>
+          <Field label="תפקיד">
+            <select style={styles.input} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+              {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+          </Field>
+        </div>
+        <div style={styles.userAddFoot}>
+          <button style={{ ...styles.addCampaignBtn, opacity: (emailOk && domainOk && !exists && !saving) ? 1 : 0.5,
+              cursor: (emailOk && domainOk && !exists && !saving) ? "pointer" : "not-allowed" }}
+            disabled={!(emailOk && domainOk) || exists || saving} onClick={addUser}>
+            {saving ? "שומר…" : "הוסף משתמש"}
+          </button>
+          <span style={styles.costHint}>{(ROLES.find((r) => r.id === form.role) || {}).hint}</span>
+        </div>
+      </div>
+
+      <div style={{ ...styles.card, marginTop: 24 }}>
+        <div style={styles.cardHead}><h3 style={styles.cardTitle}>הצוות</h3></div>
+        {state === "loading" && <div style={styles.centerState}><RefreshCw size={26} className="spin" color={KAPPA.teal} /></div>}
+        {rows.length === 0 && state !== "loading" && (
+          <div style={{ padding: "16px 4px", color: "#64748B", fontSize: 14 }}>עדיין אין משתמשים מוגדרים.</div>
+        )}
+        {rows.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.statTable}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>משתמש</th>
+                  <th style={styles.thCenter}>תפקיד</th>
+                  <th style={styles.thCenter}>לידים</th>
+                  <th style={styles.thCenter}>משימות פתוחות</th>
+                  <th style={styles.thCenter}>סטטוס</th>
+                  <th style={styles.thCenter}>פעולות</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((u) => {
+                  const stat = load[u.email] || { leads: 0, tasks: 0 };
+                  const isMe = me && me.email === u.email;
+                  const lastAdmin = u.role === "admin" && u.active &&
+                    rows.filter((x) => x.role === "admin" && x.active).length <= 1;
+                  return (
+                    <tr key={u.email}>
+                      <td style={styles.tdName}>
+                        <div>{u.name || u.email}</div>
+                        <div style={styles.campMeta} dir="ltr">{u.email}{isMe ? " · אתה" : ""}</div>
+                      </td>
+                      <td style={styles.tdCenter}>
+                        <select style={{ ...styles.input, maxWidth: 130 }} value={u.role}
+                          disabled={busy === u.email || lastAdmin}
+                          title={lastAdmin ? "זה המנהל האחרון — הוסיפו מנהל נוסף לפני שינוי" : ""}
+                          onChange={(e) => patch(u, { role: e.target.value })}
+                          aria-label={`תפקיד עבור ${u.email}`}>
+                          {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                        </select>
+                      </td>
+                      <td style={styles.tdCenter}>{stat.leads}</td>
+                      <td style={styles.tdCenter}>{stat.tasks}</td>
+                      <td style={styles.tdCenter}>
+                        <span style={{ ...styles.statusPill,
+                          background: u.active ? "#ECFDF5" : "#FEF2F2",
+                          color: u.active ? "#047857" : "#B91C1C" }}>
+                          <span style={{ ...styles.statusDot, background: u.active ? "#10B981" : "#EF4444" }} />
+                          {u.active ? "פעיל" : "מושבת"}
+                        </span>
+                      </td>
+                      <td style={styles.tdCenter}>
+                        <button
+                          style={{ ...styles.campToggleBtn, opacity: (busy === u.email || lastAdmin) ? 0.5 : 1,
+                            background: u.active ? "#F1F5F9" : KAPPA.tealSoft,
+                            color: u.active ? "#64748B" : KAPPA.tealDark,
+                            borderColor: u.active ? "#E2E8F0" : `${KAPPA.teal}55`,
+                            cursor: (busy === u.email || lastAdmin) ? "not-allowed" : "pointer" }}
+                          disabled={busy === u.email || lastAdmin}
+                          title={lastAdmin ? "אי אפשר להשבית את המנהל האחרון" : (stat.leads ? `למשתמש הזה ${stat.leads} לידים — שקלו להעביר אותם קודם` : "")}
+                          onClick={() => patch(u, { active: !u.active })}>
+                          <Power size={14} /> {busy === u.email ? "…" : (u.active ? "השבת" : "הפעל")}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p style={styles.costHint}>
+          השבתת משתמש חוסמת אותו מכניסה ומורידה אותו מרשימת הבעלים, אבל משאירה את
+          הלידים והמשימות שכבר משויכים אליו — כדי שלא ייעלמו. העבירו אותם קודם למי שימשיך לטפל.
+          <br />
+          {ROLES.map((r) => `${r.label}: ${r.hint}`).join(" · ")}
+        </p>
+        {!isAdmin && <p style={styles.costHint}>אין לך הרשאת מנהל — התצוגה לקריאה בלבד.</p>}
       </div>
     </div>
   );
@@ -3550,6 +3861,7 @@ const css = `
     .journey-promo { padding: 14px 10px !important; }
     .drawer-body { padding: 16px 14px !important; }
     .task-add-grid { grid-template-columns: 1fr !important; }
+    .user-add-grid { grid-template-columns: 1fr !important; }
   }
 `;
 
@@ -3570,6 +3882,8 @@ const styles = {
   quickRow: { display: "flex", gap: 6, marginTop: 8 },
   quickBtn: { border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.graphite, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   toastAction: { marginRight: 10, border: "1px solid rgba(255,255,255,0.4)", background: "transparent", color: "#fff", borderRadius: 7, padding: "3px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT },
+  userAddGrid: { display: "grid", gridTemplateColumns: "1.4fr 1fr 0.9fr", gap: 14, padding: "0 26px" },
+  userAddFoot: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", padding: "12px 26px 0" },
   taskBar: { display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 14 },
   taskShowDone: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, color: KAPPA.graphite, cursor: "pointer" },
   taskList: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
@@ -3679,6 +3993,8 @@ const styles = {
   campRow: { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", borderBottom: "1px solid #F8FAFC" },
   campName: { background: "none", border: "none", padding: 0, fontSize: 15.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 4 },
+  campActions: { display: "inline-flex", gap: 8, flexWrap: "wrap", justifyContent: "center" },
+  campCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${KAPPA.teal}`, background: KAPPA.tealSoft, color: KAPPA.tealDark, borderRadius: 10, padding: "9px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "9px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
   statusPill: { display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 13px", borderRadius: 20, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" },
   statusDot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 },
