@@ -4,7 +4,7 @@ import {
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
   Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, LogOut, UserCog,
-  Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power
+  Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power, Bell
 } from "lucide-react";
 
 // ============ API ============
@@ -30,6 +30,9 @@ const API = {
   taskTypes: `${API_BASE}/crm/task-types`,
   taskTypeSave: `${API_BASE}/crm/task-type/save`,
   taskTypeDelete: `${API_BASE}/crm/task-type/delete`,
+  notifPrefs: `${API_BASE}/crm/notification-prefs`,
+  notifPrefSave: `${API_BASE}/crm/notification-pref/save`,
+  notify: `${API_BASE}/crm/notify`,
 };
 
 // ============ Kappa brand ============
@@ -188,6 +191,27 @@ const TASK_TYPES_FALLBACK = [
 ];
 const OTHER_TASK = "other";
 const DEFAULT_TASK_OWNER = "ofer@kappainv.com";
+
+// Notification catalogue. `admin` marks the ones only admins receive, and
+// `on` marks the three that are enabled unless the user turns them off —
+// deliberately only the ones tied to a person's own daily work, so the system
+// doesn't train people to ignore its mail.
+const NOTIFICATIONS = [
+  { id: "task_assigned", label: "הוקצתה לי משימה", group: "מיידי", on: true },
+  { id: "owner_changed", label: "הועברה אליי בעלות על ליד", group: "מיידי" },
+  { id: "lead_new", label: "ליד חדש נכנס", group: "מיידי", admin: true },
+  { id: "lead_interested", label: "ליד עבר למעוניין להשקיע", group: "מיידי", admin: true },
+  { id: "lead_closed", label: "ליד נסגר", group: "מיידי", admin: true },
+  { id: "lead_lost", label: "ליד סומן כלא מעוניין", group: "מיידי", admin: true },
+  { id: "lead_deleted", label: "ליד נמחק", group: "מיידי", admin: true },
+  { id: "daily_calls", label: "שיחות להיום", group: "סיכום יומי", on: true },
+  { id: "daily_tasks", label: "משימות להיום", group: "סיכום יומי", on: true },
+  { id: "daily_overdue", label: "פיגורים", group: "סיכום יומי" },
+  { id: "meeting_reminder", label: "תזכורת לפגישה מחר", group: "סיכום יומי" },
+  { id: "weekly_stuck", label: "לידים תקועים", group: "שבועי" },
+  { id: "weekly_summary", label: "סיכום שבועי", group: "שבועי" },
+];
+const NOTIF_GROUPS = ["מיידי", "סיכום יומי", "שבועי"];
 
 const TaskTypesCtx = React.createContext(null);
 function useTaskTypes() {
@@ -348,7 +372,7 @@ const fmtDMY = (d) => {
 };
 // How long a lead has sat in its current stage. stage_since is written on every
 // stage change; created_at is the fallback for leads that predate that field.
-const STAGE_AGE_LIMIT = 14; // days before a lead counts as "stuck"
+const STAGE_AGE_LIMIT = 30; // days before a lead counts as "stuck"
 const daysInStage = (lead) => {
   const d = parseDMY(lead && (lead.stage_since || lead.created_at));
   if (!d) return null;
@@ -591,6 +615,21 @@ export default function App() {
       save: saveTaskType, remove: removeTaskType, reload: loadTaskTypes,
     };
   }, [taskTypeRows, taskTypeState, saveTaskType, removeTaskType, loadTaskTypes]);
+
+  // Fire-and-forget: a notification that fails must never surface an error on
+  // an action that already succeeded, so this deliberately swallows failures.
+  const notify = useCallback((event, payload) => {
+    try {
+      fetch(API.notify, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event,
+          actor: (session && session.email) || "",
+          payload: payload || {},
+        }),
+      }).catch(() => {});
+    } catch { /* ignore */ }
+  }, [session]);
 
   const removeUser = useCallback(async (email) => {
     try {
@@ -855,6 +894,16 @@ export default function App() {
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error();
+      // Only the three stages worth interrupting someone for.
+      const STAGE_EVENT = { interested: "lead_interested", closed: "lead_closed", lost: "lead_lost" };
+      if (STAGE_EVENT[stage] && fromStage !== stage) {
+        notify(STAGE_EVENT[stage], {
+          lead_name: (before && before.name) || "",
+          campaign: (before && before.campaign) || "",
+          amount: (before && before.amount) || "",
+          actor_name: (session && session.name) || "",
+        });
+      }
       if (opts.resumeStage != null) {
         flash("ממשיך מהשלב האחרון — נשלחה תזכורת");
       } else {
@@ -880,6 +929,10 @@ export default function App() {
       setLeads((ls) => [{ ...created, id: String(created.id) }, ...ls]);
       setAdding(false);
       flash("הליד נוסף");
+      notify("lead_new", {
+        lead_name: form.name, campaign: form.campaign, amount: form.amount,
+        actor_name: (session && session.name) || "",
+      });
     } catch {
       flash("הוספת הליד נכשלה", "err");
     }
@@ -888,6 +941,7 @@ export default function App() {
   // update lead → POST /crm/lead/update
   const updateLead = async (data) => {
     const prev = leads;
+    const before = leads.find((l) => l.id === data.id);
     setLeads((ls) => ls.map((l) => (l.id === data.id ? { ...l, ...data } : l)));
     if (selected && selected.id === data.id) setSelected((s) => ({ ...s, ...data }));
     try {
@@ -897,6 +951,19 @@ export default function App() {
       });
       if (!res.ok) throw new Error();
       flash("הליד עודכן");
+      // Only when ownership actually moved to someone new. An edit that leaves
+      // the owner untouched, or clears it, is not a handover worth an email.
+      const newOwner = String(data.owner == null ? "" : data.owner).trim().toLowerCase();
+      const oldOwner = String((before && before.owner) || "").trim().toLowerCase();
+      if (data.owner !== undefined && newOwner && newOwner !== oldOwner) {
+        notify("owner_changed", {
+          to: newOwner,
+          lead_name: (data.name || (before && before.name)) || "",
+          campaign: (data.campaign || (before && before.campaign)) || "",
+          amount: (data.amount || (before && before.amount)) || "",
+          actor_name: (session && session.name) || "",
+        });
+      }
     } catch {
       setLeads(prev); flash("העדכון נכשל", "err");
     }
@@ -919,6 +986,7 @@ export default function App() {
       const out = await res.json();
       if (!out || out.ok !== true) throw new Error();
       flash("הליד נמחק ותועד ביומן המחיקות");
+      notify("lead_deleted", { lead_name: lead.name, actor_name: (session && session.name) || "" });
     } catch {
       setLeads(prev); flash("המחיקה נכשלה — הליד שוחזר", "err");
     }
@@ -1040,6 +1108,7 @@ export default function App() {
               <NavItem icon={<Megaphone size={19} />} label="קמפיינים" active={view === "campaigns"} onClick={() => setView("campaigns")} />
             )}
             <NavItem icon={<Target size={19} />} label="ליווי משקיעים" active={view === "journey"} onClick={() => setView("journey")} />
+            <NavItem icon={<Bell size={19} />} label="התראות" active={view === "notifications"} onClick={() => setView("notifications")} />
             {usersValue.isAdmin && (
               <NavItem icon={<UserCog size={19} />} label="משתמשים" active={view === "users"} onClick={() => setView("users")} />
             )}
@@ -1102,6 +1171,7 @@ export default function App() {
           {status === "ready" && view === "tasks" && (
             <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} flash={flash} />
           )}
+          {status === "ready" && view === "notifications" && <NotificationsScreen session={session} flash={flash} />}
           {status === "ready" && view === "users" && usersValue.isAdmin && <UsersAdmin session={session} flash={flash} leads={leads} />}
           {status === "ready" && view === "campaigns" && usersValue.isAdmin && (
             <CampaignsAdmin leads={leads} session={session} flash={flash} onRenameLeads={renameCampaignOnLeads} />
@@ -1131,7 +1201,7 @@ export default function App() {
         <LeadDrawer lead={selected} onClose={() => setSelected(null)}
           onMove={(s) => moveLead(selected.id, s)} onSave={updateLead}
           onRequestDelete={() => setConfirmDelete(selected)}
-          session={session} owners={owners} onSaveTasks={saveTasks} />
+          session={session} owners={owners} onSaveTasks={saveTasks} onNotify={notify} />
       )}
       {adding && <AddLead onClose={() => setAdding(false)} onSave={addLead} leads={leads} session={session} owners={owners} />}
 
@@ -1821,6 +1891,111 @@ function CampaignsAdmin({ leads, session, flash, onRenameLeads }) {
           מוצגים במטבע אחד כדי שאפשר יהיה להשוות ביניהם, והפירוט המקורי מופיע בהצבעה עם העכבר.
         </p>
       </div>
+    </div>
+  );
+}
+
+// Each person manages their own notifications. Only explicit choices are sent
+// to the server, so a switch the user never touches keeps following its
+// default rather than being frozen at whatever it looked like on first load.
+function NotificationsScreen({ session, flash }) {
+  const { isAdmin } = useUsers();
+  const [prefs, setPrefs] = useState({});
+  const [state, setState] = useState("loading");
+  const [busy, setBusy] = useState("");
+  const email = ((session && session.email) || "").toLowerCase();
+
+  const load = useCallback(async () => {
+    setState("loading");
+    try {
+      const res = await fetch(API.notifPrefs);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      const map = {};
+      (d.prefs || []).forEach((r) => {
+        if (String(r.email || "").toLowerCase() === email) map[r.notif_id] = !!r.enabled;
+      });
+      setPrefs(map);
+      setState("ready");
+    } catch {
+      setState("error");
+    }
+  }, [email]);
+  useEffect(() => { load(); }, [load]);
+
+  const isOn = (n) => (Object.prototype.hasOwnProperty.call(prefs, n.id) ? prefs[n.id] : !!n.on);
+
+  const toggle = async (n) => {
+    const next = !isOn(n);
+    setBusy(n.id);
+    setPrefs((p) => ({ ...p, [n.id]: next }));
+    try {
+      const res = await fetch(API.notifPrefSave, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, notif_id: n.id, enabled: next }),
+      });
+      if (!res.ok) throw new Error();
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error();
+    } catch {
+      setPrefs((p) => ({ ...p, [n.id]: !next }));
+      flash("שמירת ההעדפה נכשלה", "err");
+    }
+    setBusy("");
+  };
+
+  const visible = NOTIFICATIONS.filter((n) => !n.admin || isAdmin);
+
+  return (
+    <div>
+      <h1 style={styles.pageTitle}>התראות</h1>
+      <p style={styles.pageSub}>בחר אילו התראות מייל תרצה לקבל. ההגדרות אישיות ולא משפיעות על אחרים.</p>
+
+      {state === "loading" && (
+        <div style={styles.centerState}><RefreshCw size={24} color={KAPPA.teal} className="spin" /><p style={styles.stateText}>טוען העדפות…</p></div>
+      )}
+      {state === "error" && (
+        <div style={styles.centerState}>
+          <AlertCircle size={30} color="#EF4444" />
+          <p style={styles.stateText}>לא הצלחנו לטעון את ההעדפות.</p>
+          <button style={styles.retryBtn} onClick={load}>נסה שוב</button>
+        </div>
+      )}
+
+      {state === "ready" && NOTIF_GROUPS.map((g) => {
+        const items = visible.filter((n) => n.group === g);
+        if (!items.length) return null;
+        return (
+          <div key={g} style={{ ...styles.card, marginBottom: 20 }}>
+            <div style={styles.cardHead}><h3 style={styles.cardTitle}>{g}</h3></div>
+            {items.map((n) => (
+              <div key={n.id} style={styles.campRow}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={styles.notifLabel}>{n.label}</div>
+                  {n.admin && <div style={styles.campMeta}>למנהלים בלבד</div>}
+                </div>
+                <button
+                  style={{ ...styles.campToggleBtn, opacity: busy === n.id ? 0.5 : 1,
+                    background: isOn(n) ? KAPPA.tealSoft : "#F1F5F9",
+                    color: isOn(n) ? KAPPA.tealDark : "#94A3B8",
+                    borderColor: isOn(n) ? `${KAPPA.teal}55` : "#E2E8F0" }}
+                  disabled={busy === n.id}
+                  onClick={() => toggle(n)}>
+                  <Power size={14} /> {isOn(n) ? "מופעל" : "כבוי"}
+                </button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {state === "ready" && (
+        <p style={styles.costHint}>
+          הסיכומים היומיים נשלחים בבוקר, והסעיפים השבועיים מצורפים אליהם בימי ראשון.
+          סיכום שכל הסעיפים בו ריקים לא נשלח בכלל. התראות מסע המשקיעים אינן מוגדרות כאן
+          וממשיכות לפעול כרגיל.
+        </p>
+      )}
     </div>
   );
 }
@@ -2674,7 +2849,7 @@ function ListView({ leads, onOpen, onMove, isMobile, onSnooze, onContacted }) {
                 </td>
                 <td style={styles.lTd} onClick={(e) => e.stopPropagation()}>
                   <div style={styles.quickRow}>
-                    <button style={styles.quickBtn} onClick={() => onContacted(l)} title="סמן שדובר היום">דובר היום</button>
+                    <button style={styles.quickBtn} onClick={() => onContacted(l)} title="סמן ששוחחנו היום">שוחחנו היום</button>
                     <button style={styles.quickBtn} onClick={() => onSnooze(l, 1)} title="דחה את השיחה ביום">דחה יום</button>
                   </div>
                 </td>
@@ -2742,7 +2917,7 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onS
         )}
       </div>
       <div className="card-quick" style={{ ...styles.quickRow, ...(isMobile ? { opacity: 1 } : {}) }} onPointerDown={(e) => e.stopPropagation()}>
-        <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}>דובר היום</button>
+        <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}>שוחחנו היום</button>
         <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onSnooze && onSnooze(lead, 1); }}>דחה יום</button>
       </div>
     </div>
@@ -3227,7 +3402,7 @@ function TaskTypesManager({ flash }) {
 }
 
 // Tasks for a single lead, inside the drawer.
-function TasksBlock({ lead, owners, session, onSaveTasks }) {
+function TasksBlock({ lead, owners, session, onSaveTasks, onNotify }) {
   const tasks = parseTasks(lead);
   const { active: taskTypes, label: typeLabel } = useTaskTypes();
   const { rows: userRows } = useUsers();
@@ -3258,6 +3433,12 @@ function TasksBlock({ lead, owners, session, onSaveTasks }) {
       id: newTaskId(), title: resolvedTitle, type, due, owner,
       done: false, created_at: todayStr(),
     }]);
+    if (onNotify && owner) {
+      onNotify("task_assigned", {
+        to: owner, task_title: resolvedTitle, lead_name: lead.name, due,
+        actor_name: (session && session.name) || "",
+      });
+    }
     setCustomTitle(""); setDue("");
     setSaving(false);
   };
@@ -3505,7 +3686,7 @@ function StageHistory({ lead }) {
 }
 
 // ============ Drawer ============
-function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, owners = [], onSaveTasks }) {
+function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, owners = [], onSaveTasks, onNotify }) {
   const isMobile = useIsMobile();
   // viewer (and anyone not on the roster) reads but does not write; deleting is
   // an admin action, per the role descriptions in ROLES.
@@ -3715,7 +3896,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
             );
             const notesBlock = <SummaryNotes lead={lead} onSave={onSave} />;
             const historyBlock = <StageHistory lead={lead} />;
-            const tasksBlock = <TasksBlock lead={lead} owners={owners} session={session} onSaveTasks={onSaveTasks} />;
+            const tasksBlock = <TasksBlock lead={lead} owners={owners} session={session} onSaveTasks={onSaveTasks} onNotify={onNotify} />;
             const meetingBlock = <MeetingAISummary lead={lead} onSave={onSave} />;
             const journeyBlock = isInterested && (
               <div style={styles.journeyPromo} className="journey-promo">
@@ -4327,6 +4508,7 @@ const styles = {
   campRow: { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", borderBottom: "1px solid #F8FAFC" },
   campName: { background: "none", border: "none", padding: 0, fontSize: 15.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 4 },
+  notifLabel: { fontSize: 17, fontWeight: 700, color: KAPPA.ink },
   campActions: { display: "inline-flex", gap: 8, flexWrap: "wrap", justifyContent: "center" },
   campCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${KAPPA.teal}`, background: KAPPA.tealSoft, color: KAPPA.tealDark, borderRadius: 10, padding: "9px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "9px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
