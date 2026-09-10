@@ -1968,8 +1968,12 @@ function NotificationsScreen({ session, flash }) {
         return (
           <div key={g} style={{ ...styles.card, marginBottom: 20 }}>
             <div style={styles.cardHead}><h3 style={styles.cardTitle}>{g}</h3></div>
-            {items.map((n) => (
-              <div key={n.id} style={styles.campRow}>
+            {items.map((n, i) => (
+              <div key={n.id} style={{
+                ...styles.notifRow,
+                ...(i % 2 === 1 ? styles.notifRowAlt : {}),
+                ...(i === items.length - 1 ? styles.notifRowLast : {}),
+              }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={styles.notifLabel}>{n.label}</div>
                   {n.admin && <div style={styles.campMeta}>למנהלים בלבד</div>}
@@ -4509,6 +4513,9 @@ const styles = {
   campName: { background: "none", border: "none", padding: 0, fontSize: 15.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 4 },
   notifLabel: { fontSize: 17, fontWeight: 700, color: KAPPA.ink },
+  notifRow: { display: "flex", alignItems: "center", gap: 14, padding: "18px 26px", borderBottom: "1px solid #E8EDF2" },
+  notifRowAlt: { background: "#FBFCFD" },
+  notifRowLast: { borderBottom: "none" },
   campActions: { display: "inline-flex", gap: 8, flexWrap: "wrap", justifyContent: "center" },
   campCostBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${KAPPA.teal}`, background: KAPPA.tealSoft, color: KAPPA.tealDark, borderRadius: 10, padding: "9px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
   campToggleBtn: { display: "inline-flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", borderRadius: 10, padding: "9px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, flexShrink: 0 },
