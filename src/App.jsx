@@ -197,21 +197,21 @@ const DEFAULT_TASK_OWNER = "ofer@kappainv.com";
 // deliberately only the ones tied to a person's own daily work, so the system
 // doesn't train people to ignore its mail.
 const NOTIFICATIONS = [
-  { id: "task_assigned", label: "הוקצתה לי משימה", group: "מיידי", on: true },
-  { id: "owner_changed", label: "הועברה אליי בעלות על ליד", group: "מיידי" },
-  { id: "lead_new", label: "ליד חדש נכנס", group: "מיידי", admin: true },
-  { id: "lead_interested", label: "ליד עבר למעוניין להשקיע", group: "מיידי", admin: true },
-  { id: "lead_closed", label: "ליד נסגר", group: "מיידי", admin: true },
-  { id: "lead_lost", label: "ליד סומן כלא מעוניין", group: "מיידי", admin: true },
-  { id: "lead_deleted", label: "ליד נמחק", group: "מיידי", admin: true },
-  { id: "daily_calls", label: "שיחות להיום", group: "סיכום יומי", on: true },
-  { id: "daily_tasks", label: "משימות להיום", group: "סיכום יומי", on: true },
-  { id: "daily_overdue", label: "פיגורים", group: "סיכום יומי" },
-  { id: "meeting_reminder", label: "תזכורת לפגישה מחר", group: "סיכום יומי" },
-  { id: "weekly_stuck", label: "לידים תקועים", group: "שבועי" },
-  { id: "weekly_summary", label: "סיכום שבועי", group: "שבועי" },
+  { id: "task_assigned", label: "הוקצתה לי משימה", group: "התראות מיידיות", on: true },
+  { id: "owner_changed", label: "הועברה אליי בעלות על ליד", group: "התראות מיידיות" },
+  { id: "lead_new", label: "ליד חדש נכנס", group: "התראות מיידיות", admin: true },
+  { id: "lead_interested", label: "ליד עבר למעוניין להשקיע", group: "התראות מיידיות", admin: true },
+  { id: "lead_closed", label: "ליד נסגר", group: "התראות מיידיות", admin: true },
+  { id: "lead_lost", label: "ליד סומן כלא מעוניין", group: "התראות מיידיות", admin: true },
+  { id: "lead_deleted", label: "ליד נמחק", group: "התראות מיידיות", admin: true },
+  { id: "daily_calls", label: "שיחות להיום", group: "התראות יומיות", on: true },
+  { id: "daily_tasks", label: "משימות להיום", group: "התראות יומיות", on: true },
+  { id: "daily_overdue", label: "פיגורים", group: "התראות יומיות" },
+  { id: "meeting_reminder", label: "תזכורת לפגישה מחר", group: "התראות יומיות" },
+  { id: "weekly_stuck", label: "לידים תקועים", group: "התראות שבועיות" },
+  { id: "weekly_summary", label: "סיכום שבועי", group: "התראות שבועיות" },
 ];
-const NOTIF_GROUPS = ["מיידי", "סיכום יומי", "שבועי"];
+const NOTIF_GROUPS = ["התראות מיידיות", "התראות יומיות", "התראות שבועיות"];
 
 const TaskTypesCtx = React.createContext(null);
 function useTaskTypes() {
@@ -1967,7 +1967,11 @@ function NotificationsScreen({ session, flash }) {
         if (!items.length) return null;
         return (
           <div key={g} style={{ ...styles.card, marginBottom: 20 }}>
-            <div style={styles.cardHead}><h3 style={styles.cardTitle}>{g}</h3></div>
+            <div style={styles.notifGroupHead}>
+              <Bell size={17} color={KAPPA.tealDark} />
+              <h3 style={styles.notifGroupTitle}>{g}</h3>
+              <span style={styles.notifGroupCount}>{items.length}</span>
+            </div>
             {items.map((n, i) => (
               <div key={n.id} style={{
                 ...styles.notifRow,
@@ -4513,6 +4517,9 @@ const styles = {
   campName: { background: "none", border: "none", padding: 0, fontSize: 15.5, fontWeight: 700, color: KAPPA.ink, cursor: "pointer", fontFamily: FONT, textAlign: "right" },
   campMeta: { fontSize: 13.5, color: "#94A3B8", marginTop: 4 },
   notifLabel: { fontSize: 17, fontWeight: 700, color: KAPPA.ink },
+  notifGroupHead: { background: KAPPA.tealSoft, borderBottom: `2px solid ${KAPPA.teal}`, padding: "16px 26px", display: "flex", alignItems: "center", gap: 10 },
+  notifGroupTitle: { fontSize: 18, fontWeight: 800, margin: 0, color: KAPPA.tealDark },
+  notifGroupCount: { fontSize: 13.5, fontWeight: 700, color: KAPPA.tealDark, background: "#fff", border: `1px solid ${KAPPA.teal}55`, borderRadius: 20, padding: "3px 11px" },
   notifRow: { display: "flex", alignItems: "center", gap: 14, padding: "18px 26px", borderBottom: "1px solid #E8EDF2" },
   notifRowAlt: { background: "#FBFCFD" },
   notifRowLast: { borderBottom: "none" },
