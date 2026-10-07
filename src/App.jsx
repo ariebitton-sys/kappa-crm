@@ -2813,12 +2813,22 @@ function PipelineFilterBar({ filters, onChange, isMobile, allLeads = [] }) {
 }
 
 // ============ Pipeline ============
+const BOARD_FIT_KEY = "kappa_board_fit";
 function Pipeline({ leads, allLeads = [], onOpen, onMove, onSave, canEdit, dragId, setDragId, isMobile, filters, onFiltersChange, onSnooze, onContacted }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
   const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
   const [expanded, setExpanded] = useState({}); // { [stageId]: true } → show all cards
   const COLLAPSED_LIMIT = 5;
+  // "Fit to screen": all seven columns share the available width (no sideways
+  // scrolling) and the cards drop to their essentials. Remembered per browser.
+  const [fitRaw, setFitRaw] = useState(() => { try { return localStorage.getItem(BOARD_FIT_KEY) === "1"; } catch { return false; } });
+  const fit = fitRaw && !isMobile;
+  const toggleFit = () => setFitRaw((v) => {
+    const next = !v;
+    try { localStorage.setItem(BOARD_FIT_KEY, next ? "1" : "0"); } catch { /* per-browser convenience only */ }
+    return next;
+  });
   // Newest lead first (LIFO) by created_at; falls back to id order.
   const sortLifo = (arr) => [...arr].sort((a, b) => {
     const da = parseDMY(a.created_at), db = parseDMY(b.created_at);
@@ -2887,18 +2897,28 @@ function Pipeline({ leads, allLeads = [], onOpen, onMove, onSave, canEdit, dragI
           </div>
           <PipelineFilterBar filters={filters} onChange={onFiltersChange} isMobile={isMobile} allLeads={allLeads} />
         </div>
-        <div style={styles.viewToggle}>
-          <button onClick={() => setMode("kanban")} style={{ ...styles.toggleBtn, ...(mode === "kanban" ? styles.toggleActive : {}) }}>
-            <LayoutGrid size={16} /> לוח
-          </button>
-          <button onClick={() => setMode("list")} style={{ ...styles.toggleBtn, ...(mode === "list" ? styles.toggleActive : {}) }}>
-            <List size={16} /> רשימה
-          </button>
+        <div style={styles.pipeHeadTools}>
+          {mode === "kanban" && !isMobile && (
+            <button onClick={toggleFit} style={{ ...styles.fitBtn, ...(fit ? styles.fitBtnActive : {}) }}
+              title={fit ? "חזרה לעמודות ברוחב מלא" : "הקטן את כל הקבוצות כך שכולן ייראו במסך בלי גלילה לצדדים"}
+              aria-pressed={fit}>
+              {fit ? <Maximize2 size={15} /> : <Minimize2 size={15} />}
+              {fit ? "תצוגה רגילה" : "כל הקבוצות במסך"}
+            </button>
+          )}
+          <div style={styles.viewToggle}>
+            <button onClick={() => setMode("kanban")} style={{ ...styles.toggleBtn, ...(mode === "kanban" ? styles.toggleActive : {}) }}>
+              <LayoutGrid size={16} /> לוח
+            </button>
+            <button onClick={() => setMode("list")} style={{ ...styles.toggleBtn, ...(mode === "list" ? styles.toggleActive : {}) }}>
+              <List size={16} /> רשימה
+            </button>
+          </div>
         </div>
       </div>
 
       {mode === "kanban" ? (
-        <div style={styles.board}>
+        <div style={{ ...styles.board, ...(fit ? styles.boardFit : {}) }}>
           {STAGES.map((stage) => {
             const all = sortLifo(leads.filter((l) => l.stage === stage.id));
             const sum = all.reduce((s, l) => s + (Number(l.amount) || 0), 0);
@@ -2908,16 +2928,16 @@ function Pipeline({ leads, allLeads = [], onOpen, onMove, onSave, canEdit, dragI
             const isOver = overStage === stage.id && drag;
             return (
               <div key={stage.id} className="col" data-stage={stage.id}
-                style={{ ...styles.col, background: isOver ? stage.soft : (stage.muted ? "#F3F5F8" : "#EFF2F6"), opacity: stage.muted && !isOver ? 0.78 : 1, outline: isOver ? `2px dashed ${stage.color}` : "none" }}>
-                <div style={styles.colHead}>
-                  <span style={{ ...styles.colDot, background: stage.color }} />
-                  <span style={styles.colTitle}>{stage.label}</span>
-                  <span style={styles.colCount}>{all.length}</span>
+                style={{ ...styles.col, ...(fit ? styles.colFit : {}), background: isOver ? stage.soft : (stage.muted ? "#F3F5F8" : "#EFF2F6"), opacity: stage.muted && !isOver ? 0.78 : 1, outline: isOver ? `2px dashed ${stage.color}` : "none" }}>
+                <div style={{ ...styles.colHead, ...(fit ? styles.colHeadFit : {}) }}>
+                  <span style={{ ...styles.colDot, background: stage.color, flexShrink: 0 }} />
+                  <span style={{ ...styles.colTitle, ...(fit ? styles.colTitleFit : {}) }} title={stage.label}>{stage.label}</span>
+                  <span style={{ ...styles.colCount, ...(fit ? styles.colCountFit : {}) }}>{all.length}</span>
                 </div>
-                {sum > 0 && <div style={styles.colSum}>{fmtMoney(sum)}</div>}
+                {sum > 0 && <div style={{ ...styles.colSum, ...(fit ? styles.colSumFit : {}) }}>{fmtMoney(sum)}</div>}
                 <div style={styles.colBody}>
                   {items.map((l) => (
-                    <LeadCard key={l.id} lead={l} stage={stage}
+                    <LeadCard key={l.id} lead={l} stage={stage} compact={fit}
                       onClick={() => onOpen(l)}
                       onPointerDown={(e) => startDrag(e, l)}
                       dragging={drag && drag.id === l.id}
@@ -3065,7 +3085,7 @@ function ListView({ leads, onOpen, onMove, onSave, canEdit, isMobile, onSnooze, 
   );
 }
 
-function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onSnooze, onContacted }) {
+function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onSnooze, onContacted, compact }) {
   const due = isDue(lead.next_call);
   const age = daysInStage(lead);
   const stuck = isStuck(lead);
@@ -3099,30 +3119,42 @@ function LeadCard({ lead, stage, onClick, onPointerDown, dragging, isMobile, onS
 
   return (
     <div className="lead-card" onPointerDown={isMobile ? undefined : handleDown} onClick={isMobile ? onClick : handleClick}
-      style={{ ...styles.leadCard, opacity: dragging ? 0.35 : 1, borderRightColor: stage.color, touchAction: isMobile ? "auto" : "none" }}>
-      <div style={styles.leadCardTop}>
-        <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>
-        <span style={styles.leadName}>{lead.name}</span>
+      title={compact ? lead.name : undefined}
+      style={{ ...styles.leadCard, ...(compact ? styles.leadCardFit : {}), opacity: dragging ? 0.35 : 1, borderRightColor: stage.color, touchAction: isMobile ? "auto" : "none" }}>
+      <div style={{ ...styles.leadCardTop, ...(compact ? styles.leadCardTopFit : {}) }}>
+        {!compact && <div style={{ ...styles.avatarSm, background: stage.soft, color: stage.color }}>{initials(lead.name)}</div>}
+        <span style={{ ...styles.leadName, ...(compact ? styles.leadNameFit : {}) }}>{lead.name}</span>
       </div>
-      {lead.summary && <p style={styles.leadSummary}>{lastNote(lead.summary)}</p>}
-      <div style={styles.leadTags}>
+      {!compact && lead.summary && <p style={styles.leadSummary}>{lastNote(lead.summary)}</p>}
+      <div style={{ ...styles.leadTags, ...(compact ? styles.leadTagsFit : {}) }}>
         {Number(lead.amount) > 0 && <span style={styles.leadTag}><DollarSign size={11} />{Math.round(Number(lead.amount) / 1000)}K</span>}
-        {lead.track && <span style={styles.leadTag}>{lead.track}</span>}
+        {!compact && lead.track && <span style={styles.leadTag}>{lead.track}</span>}
         {lead.stage === "lost" && lead.lost_reason && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{lead.lost_reason}</span>}
-        {stuck && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{age} ימים בשלב</span>}
+        {stuck && <span style={{ ...styles.leadTag, background: "#FEF2F2", color: "#B91C1C" }}>{compact ? `${age} ימ׳` : `${age} ימים בשלב`}</span>}
       </div>
-      <div style={styles.leadFoot}>
-        <span style={styles.leadCampaign}>{lead.campaign}</span>
+      <div style={{ ...styles.leadFoot, ...(compact ? styles.leadFootFit : {}) }}>
+        <span style={{ ...styles.leadCampaign, ...(compact ? styles.ellipsis : {}) }}>{lead.campaign}</span>
         {lead.next_call && (
           <span style={{ ...styles.leadCall, color: due ? "#EF4444" : "#94A3B8" }}>
             <Clock size={11} /> {lead.next_call}
           </span>
         )}
       </div>
-      <div className="card-quick" style={{ ...styles.quickRow, ...(isMobile ? { opacity: 1 } : {}) }} onPointerDown={(e) => e.stopPropagation()}>
-        <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}>שוחחנו היום</button>
-        <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onSnooze && onSnooze(lead, 1); }}>דחה יום</button>
-      </div>
+      {compact ? (
+        // Narrow cards: the two quick actions become small icons floating in the
+        // card's corner on hover, so they don't reserve an empty strip.
+        <div className="card-quick" style={styles.quickFloat} onPointerDown={(e) => e.stopPropagation()}>
+          <button style={styles.quickIconBtn} title="שוחחנו היום" aria-label="שוחחנו היום"
+            onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}><Phone size={13} /></button>
+          <button style={styles.quickIconBtn} title="דחה שיחה ביום" aria-label="דחה יום"
+            onClick={(e) => { e.stopPropagation(); onSnooze && onSnooze(lead, 1); }}><CalendarClock size={13} /></button>
+        </div>
+      ) : (
+        <div className="card-quick" style={{ ...styles.quickRow, ...(isMobile ? { opacity: 1 } : {}) }} onPointerDown={(e) => e.stopPropagation()}>
+          <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onContacted && onContacted(lead); }}>שוחחנו היום</button>
+          <button style={styles.quickBtn} onClick={(e) => { e.stopPropagation(); onSnooze && onSnooze(lead, 1); }}>דחה יום</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -4924,6 +4956,23 @@ const styles = {
   recentMetaLg: { fontSize: 13, color: "#94A3B8", marginTop: 3 },
   chipLg: { fontSize: 12.5, fontWeight: 700, padding: "6px 14px", borderRadius: 20, whiteSpace: "nowrap" },
   board: { display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", paddingBottom: 10 },
+  boardFit: { gap: 8, overflowX: "hidden" },
+  colFit: { flex: "1 1 0", width: "auto", minWidth: 0, padding: 7 },
+  colHeadFit: { gap: 6, padding: "4px 4px 3px" },
+  colTitleFit: { fontSize: 13, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  colCountFit: { fontSize: 11.5, padding: "1px 7px", flexShrink: 0 },
+  colSumFit: { fontSize: 11.5, padding: "0 4px 6px" },
+  leadCardFit: { padding: "9px 9px", position: "relative" },
+  quickFloat: { position: "absolute", top: 6, left: 6, display: "flex", gap: 4 },
+  quickIconBtn: { width: 26, height: 26, display: "grid", placeItems: "center", border: "1px solid #E2E8F0", background: "#fff", color: KAPPA.tealDark, borderRadius: 7, cursor: "pointer", padding: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
+  leadCardTopFit: { marginBottom: 6, minWidth: 0 },
+  leadNameFit: { fontSize: 13.5, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" },
+  leadTagsFit: { gap: 4, marginBottom: 6 },
+  leadFootFit: { flexDirection: "column", alignItems: "flex-start", gap: 3 },
+  ellipsis: { maxWidth: "100%", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" },
+  pipeHeadTools: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  fitBtn: { display: "flex", alignItems: "center", gap: 6, border: "1.5px solid #E2E8F0", background: "#fff", color: "#64748B", padding: "8px 13px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" },
+  fitBtnActive: { border: `1.5px solid ${KAPPA.teal}`, background: KAPPA.tealSoft, color: KAPPA.tealDark },
   pipeHead: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 12 },
   pipeHeadMain: { display: "flex", alignItems: "flex-start", gap: 18, flexWrap: "wrap", flex: 1, minWidth: 0 },
   viewToggle: { display: "flex", gap: 4, background: "#EFF2F6", borderRadius: 10, padding: 4 },
