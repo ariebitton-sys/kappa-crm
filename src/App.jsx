@@ -4,7 +4,7 @@ import {
   TrendingUp, Clock, CheckCircle2, ChevronLeft,
   ArrowLeft, Target, Wallet, CalendarClock,
   Sparkles, DollarSign, RefreshCw, AlertCircle, Pencil, LayoutGrid, List, LogOut, UserCog,
-  Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power, Bell
+  Maximize2, Minimize2, Trash2, Archive, RotateCcw, Megaphone, Power, Bell, ChevronDown
 } from "lucide-react";
 
 // ============ API ============
@@ -223,7 +223,8 @@ function useTaskTypes() {
 }
 // Assignee display: name when we know it, email otherwise.
 const ownerLabel = (email, userRows) => {
-  const hit = (userRows || []).find((u) => u.email === String(email || "").toLowerCase());
+  const key = String(email || "").trim().toLowerCase();
+  const hit = (userRows || []).find((u) => u.email === key);
   return (hit && String(hit.name || "").trim()) || email;
 };
 function parseTasks(lead) {
@@ -3420,6 +3421,7 @@ function TaskCheck({ done, onToggle, compact }) {
 
 function TasksBoard({ leads, session, onOpen, onToggle, onSnooze, flash }) {
   const { label: typeLabel } = useTaskTypes();
+  const { rows: userRows } = useUsers();
   const me = (session && session.email) || "";
   const [scope, setScope] = useState("mine"); // mine | all
   const [showDone, setShowDone] = useState(false);
@@ -3485,7 +3487,7 @@ function TasksBoard({ leads, session, onOpen, onToggle, onSnooze, flash }) {
                   </div>
                   <div style={styles.taskMeta}>
                     {typeLabel(task.type)} · <button className="row-btn" style={styles.taskLeadLink} onClick={() => onOpen(lead)}>{lead.name}</button>
-                    {task.owner ? ` · ${task.owner}` : ""}
+                    {task.owner ? ` · ${ownerLabel(task.owner, userRows)}` : ""}
                   </div>
                 </div>
                 <span style={{ ...styles.taskDue, color: late ? "#EF4444" : isToday ? KAPPA.tealDark : "#94A3B8" }}>
@@ -4091,7 +4093,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
             );
             const detailBlock = (
               <div style={styles.detailGrid} className="detail-grid">
-                <Detail label="בעלים" value={lead.owner || "—"} />
+                <OwnerDetail lead={lead} owners={owners} canEdit={canEdit} onSave={onSave} />
                 <Detail label="קמפיין" value={lead.campaign || "—"} />
                 <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
                 <DateDetail label="מועד פגישה" value={lead.meeting_date || ""} canEdit={canEdit}
@@ -4205,6 +4207,35 @@ function DateDetail({ label, value, highlight, canEdit, onCommit }) {
         {canEdit
           ? <InlineDate value={value} onCommit={onCommit} placeholder="קבע תאריך" inputStyle={{ width: "100%", minWidth: 0 }} />
           : (value || "—")}
+      </div>
+    </div>
+  );
+}
+
+// The lead's owner, shown by name and changeable in place: a native select
+// dressed as plain text, saved the moment a different person is picked (the
+// regular update path, so the "owner changed" notification still fires).
+function OwnerDetail({ lead, owners, canEdit, onSave }) {
+  const { rows: userRows } = useUsers();
+  const value = String(lead.owner || "").trim();
+  const list = !value || owners.some((o) => o.toLowerCase() === value.toLowerCase()) ? owners : owners.concat([value]);
+  return (
+    <div style={styles.detail}>
+      <div style={styles.detailLabel}>בעלים</div>
+      <div style={{ ...styles.detailValue, color: KAPPA.ink }}>
+        {canEdit ? (
+          <span className="inline-date" style={styles.inlineSelectWrap} title="לחץ לבחירת בעלים — נשמר מיד">
+            <select
+              style={{ ...styles.inlineSelect, color: value ? KAPPA.ink : "#94A3B8", fontWeight: value ? 700 : 500 }}
+              value={list.find((o) => o.toLowerCase() === value.toLowerCase()) || ""}
+              aria-label="בעלים"
+              onChange={(e) => { const v = e.target.value; if (v !== value) onSave({ ...lead, owner: v }); }}>
+              <option value="">ללא בעלים</option>
+              {list.map((o) => <option key={o} value={o}>{ownerLabel(o, userRows)}</option>)}
+            </select>
+            <ChevronDown size={14} className="inline-date-icon" style={styles.inlineSelectChevron} />
+          </span>
+        ) : (value ? ownerLabel(value, userRows) : "—")}
       </div>
     </div>
   );
@@ -4536,6 +4567,7 @@ function AddLead({ onClose, onSave, leads = [], session, owners = [] }) {
 // Owner picker: the known owners plus a free-text option, so a lead can be
 // assigned to someone who has no lead yet.
 function OwnerField({ value, owners, onChange }) {
+  const { rows: userRows } = useUsers();
   const list = owners.includes(value) || !value ? owners : owners.concat([value]);
   const [custom, setCustom] = useState(false);
   return (
@@ -4547,7 +4579,7 @@ function OwnerField({ value, owners, onChange }) {
         <select style={styles.input} value={value || ""}
           onChange={(e) => { if (e.target.value === "__other") { setCustom(true); onChange(""); } else onChange(e.target.value); }}>
           <option value="">ללא בעלים</option>
-          {list.map((o) => <option key={o} value={o}>{o}</option>)}
+          {list.map((o) => <option key={o} value={o}>{ownerLabel(o, userRows)}</option>)}
           <option value="__other">אחר…</option>
         </select>
       )}
@@ -4715,6 +4747,9 @@ const styles = {
   lReferrer: { color: KAPPA.graphite, fontWeight: 600 },
   inlineDateBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid transparent", background: "transparent", borderRadius: 7, padding: "3px 7px", margin: "-4px -8px", fontFamily: "inherit", fontSize: "inherit", fontWeight: "inherit", color: "inherit", cursor: "pointer", fontVariantNumeric: "tabular-nums", maxWidth: "calc(100% + 16px)" },
   inlineDateEmpty: { color: "#94A3B8", fontWeight: 500 },
+  inlineSelectWrap: { position: "relative", display: "flex", alignItems: "center", border: "1px solid transparent", borderRadius: 7, margin: "-4px -8px", maxWidth: "calc(100% + 16px)", cursor: "pointer" },
+  inlineSelect: { appearance: "none", WebkitAppearance: "none", MozAppearance: "none", border: "none", background: "transparent", fontFamily: "inherit", fontSize: "inherit", padding: "3px 7px 3px 26px", width: "100%", minWidth: 0, cursor: "pointer", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", direction: "rtl" },
+  inlineSelectChevron: { position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", opacity: 0.4, pointerEvents: "none", flexShrink: 0 },
   inlineDateInput: { fontFamily: FONT, fontSize: 14, padding: "5px 8px", borderRadius: 8, border: `1.5px solid ${KAPPA.teal}`, color: KAPPA.ink, background: "#fff", minWidth: 140 },
   lTableEmpty: { background: "#fff", borderRadius: 15, padding: "44px 20px", textAlign: "center", color: "#94A3B8", fontSize: 14, marginTop: 16 },
   ageTag: { display: "inline-block", minWidth: 26, textAlign: "center", padding: "2px 8px", borderRadius: 20, background: "#F1F5F9", color: "#64748B", fontSize: 12.5, fontWeight: 700 },
