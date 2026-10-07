@@ -245,6 +245,9 @@ const newTaskId = () => "t" + Date.now().toString(36) + Math.random().toString(3
 //   • next_call set/changed → the open call task that sat on the old date moves
 //     to the new one; if there was none, a call task is created. Snoozing a call
 //     therefore moves its task instead of piling up duplicates.
+//   • next_call unchanged but no open call task on that date (a date entered
+//     before this sync existed, or on the new-lead form) → the task is created
+//     on the lead's next save, for any lead still in play (not closed/lost).
 //   • call tasks changed (added, re-dated, completed, deleted) → next_call
 //     becomes the earliest open call task's date. When the last open call task
 //     that carried the current date is closed, next_call is cleared — a call
@@ -265,8 +268,10 @@ function syncCallFields(before, data, { owner = "", title = "שיחה" } = {}) {
   const nextCall = String(merged.next_call || "");
   const callDateChanged = data.next_call !== undefined && nextCall !== prevCall && !!parseDMY(nextCall);
   const callTasksChanged = data.tasks !== undefined && callSignature(prevTasks) !== callSignature(nextTasks);
+  const inPlay = !["lost", "closed"].includes(String(merged.stage || ""));
+  const missingTask = !!parseDMY(nextCall) && inPlay;
 
-  if (callDateChanged && !callTasksChanged) {
+  if ((callDateChanged || missingTask) && !callTasksChanged) {
     if (nextTasks.some((t) => isOpenCall(t) && t.due === nextCall)) return { extra: {}, created: null };
     const linked = prevCall ? nextTasks.find((t) => isOpenCall(t) && t.due === prevCall) : null;
     if (linked) {
