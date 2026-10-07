@@ -4126,7 +4126,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
             const detailBlock = (
               <div style={styles.detailGrid} className="detail-grid">
                 <OwnerDetail lead={lead} owners={owners} canEdit={canEdit} onSave={onSave} />
-                <Detail label="קמפיין" value={lead.campaign || "—"} />
+                <LeadCampaignDetail lead={lead} canEdit={canEdit} onSave={onSave} />
                 <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
                 <DateDetail label="מועד פגישה" value={lead.meeting_date || ""} canEdit={canEdit}
                   onCommit={(v) => onSave({ ...lead, meeting_date: v })} />
@@ -4241,6 +4241,107 @@ function DateDetail({ label, value, highlight, canEdit, onCommit }) {
           : (value || "—")}
       </div>
     </div>
+  );
+}
+
+// Campaign (and, for referrals, who referred) changeable in place from the lead
+// card. Listed campaigns come from a select dressed as text; "אחר…" swaps in a
+// text box whose content becomes the stored campaign, as in the edit form.
+// Choosing "הפניה" on a lead with no referrer opens the referrer box straight
+// away, since a referral without a name is the one thing worth prompting for.
+function LeadCampaignDetail({ lead, canEdit, onSave }) {
+  const { active, all } = useCampaigns();
+  const value = String(lead.campaign || "").trim();
+  const referrer = String(lead.referrer || "").trim();
+  const [typingOther, setTypingOther] = useState(false);
+  const [refOpen, setRefOpen] = useState(false);
+  const known = active.slice();
+  if (value && all.includes(value) && !known.includes(value)) known.push(value);
+  const isCustom = !!value && !known.includes(value);
+  const isReferral = value === REFERRAL_CAMPAIGN;
+
+  if (!canEdit) {
+    return (
+      <div style={styles.detail}>
+        <div style={styles.detailLabel}>קמפיין</div>
+        <div style={{ ...styles.detailValue, color: KAPPA.ink }}>{value || "—"}</div>
+        {isReferral && referrer && <div style={styles.detailSub}>מפנה: {referrer}</div>}
+      </div>
+    );
+  }
+  return (
+    <div style={styles.detail}>
+      <div style={styles.detailLabel}>קמפיין</div>
+      <div style={{ ...styles.detailValue, color: KAPPA.ink }}>
+        {typingOther ? (
+          <InlineText value={isCustom ? value : ""} placeholder="שם הקמפיין…" startOpen
+            onCommit={(v) => { setTypingOther(false); if (v && v !== value) onSave({ ...lead, campaign: v }); }}
+            onCancel={() => setTypingOther(false)} />
+        ) : (
+          <span className="inline-date" style={styles.inlineSelectWrap} title="לחץ לבחירת קמפיין — נשמר מיד">
+            <select
+              style={{ ...styles.inlineSelect, color: value ? KAPPA.ink : "#94A3B8", fontWeight: value ? 700 : 500 }}
+              value={isCustom ? "__custom" : value}
+              aria-label="קמפיין"
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "__other") { setTypingOther(true); return; }
+                if (v === "__custom" || v === value) return;
+                onSave({ ...lead, campaign: v });
+                if (v === REFERRAL_CAMPAIGN && !referrer) setRefOpen(true);
+              }}>
+              {!value && <option value="">בחר קמפיין</option>}
+              {known.map((c) => <option key={c} value={c}>{c}</option>)}
+              {isCustom && <option value="__custom">{value}</option>}
+              <option value="__other">אחר…</option>
+            </select>
+            <ChevronDown size={14} className="inline-date-icon" style={styles.inlineSelectChevron} />
+          </span>
+        )}
+      </div>
+      {(isReferral || referrer) && (
+        <div style={styles.detailSub}>
+          <span style={{ flexShrink: 0 }}>מפנה:</span>
+          <InlineText value={referrer} placeholder="הוסף גורם מפנה" startOpen={refOpen}
+            onCommit={(v) => { setRefOpen(false); if (v !== referrer) onSave({ ...lead, referrer: v }); }}
+            onCancel={() => setRefOpen(false)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Click-to-edit text: plain text until clicked, then a small input that saves
+// on Enter or when focus leaves, and drops the change on Esc.
+function InlineText({ value, placeholder = "—", onCommit, onCancel, startOpen }) {
+  const [editing, setEditing] = useState(!!startOpen);
+  const [draft, setDraft] = useState(value || "");
+  const inputRef = useRef(null);
+  const cancelled = useRef(false);
+  useEffect(() => { if (startOpen) { setDraft(value || ""); setEditing(true); } }, [startOpen]);
+  useEffect(() => { if (editing && inputRef.current) { inputRef.current.focus(); inputRef.current.select(); } }, [editing]);
+  if (editing) {
+    return (
+      <input ref={inputRef} style={styles.inlineTextInput} value={draft} placeholder={placeholder}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelled.current = true; e.currentTarget.blur(); }
+        }}
+        onBlur={() => {
+          setEditing(false);
+          if (cancelled.current) { cancelled.current = false; setDraft(value || ""); if (onCancel) onCancel(); return; }
+          onCommit(draft.trim());
+        }} />
+    );
+  }
+  return (
+    <button type="button" className="inline-date" style={styles.inlineDateBtn}
+      onClick={(e) => { e.stopPropagation(); setDraft(value || ""); setEditing(true); }} title="לחץ לעריכה — נשמר מיד">
+      <span style={value ? undefined : styles.inlineDateEmpty}>{value || placeholder}</span>
+      <Pencil size={12} className="inline-date-icon" style={{ opacity: 0.4, flexShrink: 0 }} />
+    </button>
   );
 }
 
@@ -4779,6 +4880,8 @@ const styles = {
   lReferrer: { color: KAPPA.graphite, fontWeight: 600 },
   inlineDateBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid transparent", background: "transparent", borderRadius: 7, padding: "3px 7px", margin: "-4px -8px", fontFamily: "inherit", fontSize: "inherit", fontWeight: "inherit", color: "inherit", cursor: "pointer", fontVariantNumeric: "tabular-nums", maxWidth: "calc(100% + 16px)" },
   inlineDateEmpty: { color: "#94A3B8", fontWeight: 500 },
+  inlineTextInput: { fontFamily: FONT, fontSize: 14, fontWeight: 600, padding: "5px 8px", borderRadius: 8, border: `1.5px solid ${KAPPA.teal}`, color: KAPPA.ink, background: "#fff", width: "100%", minWidth: 0 },
+  detailSub: { display: "flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 13, fontWeight: 600, color: KAPPA.graphite, minWidth: 0 },
   inlineSelectWrap: { position: "relative", display: "flex", alignItems: "center", border: "1px solid transparent", borderRadius: 7, margin: "-4px -8px", maxWidth: "calc(100% + 16px)", cursor: "pointer" },
   inlineSelect: { appearance: "none", WebkitAppearance: "none", MozAppearance: "none", border: "none", background: "transparent", fontFamily: "inherit", fontSize: "inherit", padding: "3px 7px 3px 26px", width: "100%", minWidth: 0, cursor: "pointer", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", direction: "rtl" },
   inlineSelectChevron: { position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", opacity: 0.4, pointerEvents: "none", flexShrink: 0 },
