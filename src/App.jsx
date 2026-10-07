@@ -5060,7 +5060,10 @@ const styles = {
   chipLg: { fontSize: 12.5, fontWeight: 700, padding: "6px 14px", borderRadius: 20, whiteSpace: "nowrap" },
   board: { display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", paddingBottom: 10 },
   boardFit: { gap: 8, overflowX: "hidden" },
-  colFit: { flex: "1 1 0", width: "auto", minWidth: 0, padding: 7 },
+  // Longhands, not the `flex` shorthand: React clears a removed shorthand with
+  // style.flex = "", which also wipes the column's own flexShrink: 0 — so
+  // leaving fit mode used to leave the columns squeezed until a page reload.
+  colFit: { flexGrow: 1, flexShrink: 1, flexBasis: 0, width: "auto", minWidth: 0, padding: 7 },
   colHeadFit: { gap: 6, padding: "4px 4px 3px" },
   colTitleFit: { fontSize: 13, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   colCountFit: { fontSize: 11.5, padding: "1px 7px", flexShrink: 0 },
