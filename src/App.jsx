@@ -236,6 +236,56 @@ function parseTasks(lead) {
 const openTasks = (lead) => parseTasks(lead).filter((t) => !t.done);
 const newTaskId = () => "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+// ---- next_call <-> call tasks -----------------------------------------------
+// "מועד שיחה הבאה" and the lead's open call tasks describe the same thing, so a
+// change to either side is mirrored onto the other inside updateLead — the one
+// place every lead write goes through (edit form, inline dates, "דחה יום", the
+// tasks screen, the task block in the drawer).
+//   • next_call set/changed → the open call task that sat on the old date moves
+//     to the new one; if there was none, a call task is created. Snoozing a call
+//     therefore moves its task instead of piling up duplicates.
+//   • call tasks changed (added, re-dated, completed, deleted) → next_call
+//     becomes the earliest open call task's date. When the last open call task
+//     that carried the current date is closed, next_call is cleared — a call
+//     that already happened is no longer the "next" one.
+const CALL_TYPE = "call";
+const isOpenCall = (t) => !!t && !t.done && t.type === CALL_TYPE && !!parseDMY(t.due);
+const earliestOpenCall = (tasks) => tasks.filter(isOpenCall)
+  .sort((a, b) => parseDMY(a.due) - parseDMY(b.due))[0] || null;
+const callSignature = (tasks) => JSON.stringify(tasks.filter(isOpenCall).map((t) => [t.id, t.due]).sort());
+// Returns the extra fields to write alongside `data`, plus the task it created
+// (if any) so the caller can send the usual "task assigned" notification.
+function syncCallFields(before, data, { owner = "", title = "שיחה" } = {}) {
+  const prevLead = before || {};
+  const merged = { ...prevLead, ...data };
+  const prevTasks = parseTasks(prevLead);
+  const nextTasks = parseTasks(merged);
+  const prevCall = String(prevLead.next_call || "");
+  const nextCall = String(merged.next_call || "");
+  const callDateChanged = data.next_call !== undefined && nextCall !== prevCall && !!parseDMY(nextCall);
+  const callTasksChanged = data.tasks !== undefined && callSignature(prevTasks) !== callSignature(nextTasks);
+
+  if (callDateChanged && !callTasksChanged) {
+    if (nextTasks.some((t) => isOpenCall(t) && t.due === nextCall)) return { extra: {}, created: null };
+    const linked = prevCall ? nextTasks.find((t) => isOpenCall(t) && t.due === prevCall) : null;
+    if (linked) {
+      return { extra: { tasks: JSON.stringify(nextTasks.map((t) => (t.id === linked.id ? { ...t, due: nextCall } : t))) }, created: null };
+    }
+    const created = {
+      id: newTaskId(), title, type: CALL_TYPE, due: nextCall,
+      owner, done: false, created_at: todayStr(), auto: true,
+    };
+    return { extra: { tasks: JSON.stringify([...nextTasks, created]) }, created };
+  }
+  if (callTasksChanged) {
+    const first = earliestOpenCall(nextTasks);
+    if (first) return { extra: first.due !== nextCall ? { next_call: first.due } : {}, created: null };
+    const carriedDate = prevCall && prevTasks.some((t) => isOpenCall(t) && t.due === prevCall);
+    return { extra: carriedDate && nextCall === prevCall ? { next_call: "" } : {}, created: null };
+  }
+  return { extra: {}, created: null };
+}
+
 const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "העברה בנקאית", "גישה לאגורה", "פרטי תשלום ראשון"];
 
 // Fallback campaign list. Campaigns now live in the Campaigns tab of the sheet
@@ -244,6 +294,11 @@ const JOURNEY = ["החלטה", "הסכמים", "חתימת כל הצדדים", "
 // "אחר" is not a stored campaign — it's the free-text escape hatch in the UI.
 const CAMPAIGNS_FALLBACK = ["הפניה", "שיחה יזומה", "פנייה של הלקוח", "וובינר", "קמפיין פייסבוק", "נטוורקינג", "אתר אינטרנט - SEO", "PPC"];
 const OTHER = "אחר";
+// Filter key for a lead's campaign ("" collapses to a "no campaign" bucket).
+const NO_CAMPAIGN = "__none";
+const campaignKey = (lead) => String((lead && lead.campaign) || "").trim() || NO_CAMPAIGN;
+// The referral campaign — the list view shows who referred the lead next to it.
+const REFERRAL_CAMPAIGN = "הפניה";
 
 // Campaigns are shared by the lead forms, the stats tabs and the management
 // screen, so they're provided via context rather than threaded through every
@@ -333,13 +388,28 @@ const fmtMoney = (n) => {
 };
 // Search normalization: lowercase + collapsed whitespace.
 const normText = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+// Google Sheets stores a typed 0544390113 as the number 544390113, dropping
+// the leading zero. An Israeli number that arrives as bare digits with the
+// zero missing (9 digits starting 5/7 = mobile/VoIP, 8 digits starting
+// 2/3/4/8/9 = landline) gets it back for display. Anything typed with
+// formatting (dashes, spaces, +) is shown exactly as entered.
+const fmtPhone = (s) => {
+  const raw = String(s == null ? "" : s).trim();
+  if (!/^\d+$/.test(raw)) return raw;
+  if (/^[57]\d{8}$/.test(raw) || /^[23489]\d{7}$/.test(raw)) return "0" + raw;
+  return raw;
+};
 // Phone normalization: digits only, +972/972 rewritten to a local 0-prefix, so
-// 052-123-4567, 0521234567 and +972521234567 all match each other.
+// 052-123-4567, 0521234567, +972521234567 and a sheet-stripped 521234567 all
+// match each other.
 const normPhone = (s) => {
-  let d = String(s || "").replace(/[^\d]/g, "");
+  let d = fmtPhone(s).replace(/[^\d]/g, "");
   if (d.startsWith("972")) d = "0" + d.slice(3);
   return d;
 };
+// A lead as the edit form should see it (phone with its leading zero back).
+const withDisplayPhone = (lead) => (lead && lead.phone !== undefined && lead.phone !== null && lead.phone !== ""
+  ? { ...lead, phone: fmtPhone(lead.phone) } : lead);
 const initials = (name) => (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
 const todayStr = () => new Date().toLocaleDateString("en-GB");
 // The notes field is append-only (one entry per line); card previews should
@@ -423,6 +493,7 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
+  const searchRef = useRef(null);
   const [dragId, setDragId] = useState(null);
   const [toast, setToast] = useState(null);
   const [journeyPrompt, setJourneyPrompt] = useState(null); // { id, resumeStage } pending move into "interested"
@@ -731,10 +802,13 @@ export default function App() {
   useEffect(() => { if (session) loadLeads(); }, [loadLeads, session]);
 
   // Open the lead named in ?lead=… once the list has arrived (once per load).
+  // The id is captured at first render: the address-bar sync below rewrites
+  // the URL (dropping ?lead) before the leads finish loading.
+  const initialLeadId = useRef(typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("lead") : null);
   useEffect(() => {
     if (deepLinkRef.current || !leads.length) return;
     deepLinkRef.current = true;
-    const id = new URLSearchParams(window.location.search).get("lead");
+    const id = initialLeadId.current;
     if (!id) return;
     const found = leads.find((l) => l.id === String(id));
     if (found) setSelected(found);
@@ -777,7 +851,7 @@ export default function App() {
   // range, and stage/group. Independent from the text search above; both
   // apply together. Only affects the Leads (Pipeline) screen, not the
   // dashboard's own aggregate numbers. ----
-  const [pf, setPf] = useState({ createdFrom: "", createdTo: "", dateField: "meeting_date", dateFrom: "", dateTo: "", stages: [], stuck: false });
+  const [pf, setPf] = useState({ createdFrom: "", createdTo: "", dateField: "meeting_date", dateFrom: "", dateTo: "", stages: [], campaigns: [], stuck: false });
   const parseISODateOnly = (s) => {
     if (!s) return null;
     const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -787,11 +861,13 @@ export default function App() {
     const hasCreated = pf.createdFrom || pf.createdTo;
     const hasOther = pf.dateFrom || pf.dateTo;
     const hasStages = pf.stages.length > 0;
-    if (!hasCreated && !hasOther && !hasStages && !pf.stuck) return filtered;
+    const hasCampaigns = pf.campaigns.length > 0;
+    if (!hasCreated && !hasOther && !hasStages && !hasCampaigns && !pf.stuck) return filtered;
     const cf = parseISODateOnly(pf.createdFrom), ct = parseISODateOnly(pf.createdTo);
     const df = parseISODateOnly(pf.dateFrom), dt = parseISODateOnly(pf.dateTo);
     return filtered.filter((l) => {
       if (hasStages && !pf.stages.includes(l.stage)) return false;
+      if (hasCampaigns && !pf.campaigns.includes(campaignKey(l))) return false;
       if (pf.stuck && !isStuck(l)) return false;
       if (hasCreated) {
         const d = parseDMY(l.created_at);
@@ -917,6 +993,21 @@ export default function App() {
     }
   };
 
+  // Who an automatically created call task belongs to — the same default the
+  // task form uses (Ofer, else whoever is signed in).
+  const callTaskDefaults = () => ({
+    owner: owners.includes(DEFAULT_TASK_OWNER) ? DEFAULT_TASK_OWNER : ((session && session.email) || ""),
+    title: taskTypesValue.label(CALL_TYPE) || "שיחה",
+  });
+  const notifyAutoCallTask = (task, leadName) => {
+    const me = String((session && session.email) || "").toLowerCase();
+    if (!task || !task.owner || String(task.owner).toLowerCase() === me) return;
+    notify("task_assigned", {
+      to: task.owner, task_title: task.title, lead_name: leadName || "", due: task.due,
+      actor_name: (session && session.name) || "",
+    });
+  };
+
   // add lead → POST /crm/lead/add
   const addLead = async (form) => {
     try {
@@ -926,22 +1017,47 @@ export default function App() {
       });
       if (!res.ok) throw new Error();
       const created = await res.json();
-      setLeads((ls) => [{ ...created, id: String(created.id) }, ...ls]);
+      const createdLead = { ...created, id: String(created.id) };
+      // The add webhook stores a fixed column set that has no owner or tasks,
+      // so both follow straight away through the regular update webhook — the
+      // owner chosen in the form used to be silently dropped here.
+      const follow = {};
+      if (form.owner) follow.owner = form.owner;
+      const sync = syncCallFields({ ...createdLead, next_call: "", tasks: "" },
+        { next_call: form.next_call || "" }, callTaskDefaults());
+      Object.assign(follow, sync.extra);
+      const full = { ...createdLead, ...follow };
+      setLeads((ls) => [full, ...ls]);
       setAdding(false);
       flash("הליד נוסף");
       notify("lead_new", {
         lead_name: form.name, campaign: form.campaign, amount: form.amount,
         actor_name: (session && session.name) || "",
       });
+      if (Object.keys(follow).length) {
+        try {
+          const r2 = await fetch(API.update, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(full),
+          });
+          if (!r2.ok) throw new Error();
+          notifyAutoCallTask(sync.created, form.name);
+        } catch {
+          flash("הליד נוסף, אבל שמירת הבעלים / משימת השיחה נכשלה — פתח את הליד ושמור שוב", "err");
+        }
+      }
     } catch {
       flash("הוספת הליד נכשלה", "err");
     }
   };
 
   // update lead → POST /crm/lead/update
-  const updateLead = async (data) => {
+  const updateLead = async (input) => {
     const prev = leads;
-    const before = leads.find((l) => l.id === data.id);
+    const before = leads.find((l) => l.id === input.id);
+    // Keep next_call and the lead's call tasks in step (see syncCallFields).
+    const sync = syncCallFields(before, input, callTaskDefaults());
+    const data = { ...input, ...sync.extra };
     setLeads((ls) => ls.map((l) => (l.id === data.id ? { ...l, ...data } : l)));
     if (selected && selected.id === data.id) setSelected((s) => ({ ...s, ...data }));
     try {
@@ -950,7 +1066,14 @@ export default function App() {
         body: JSON.stringify(data),
       });
       if (!res.ok) throw new Error();
-      flash("הליד עודכן");
+      if (sync.created) {
+        flash(`הליד עודכן · נוצרה משימת שיחה ל-${sync.created.due}`);
+        notifyAutoCallTask(sync.created, data.name || (before && before.name));
+      } else if (sync.extra.next_call !== undefined) {
+        flash(sync.extra.next_call ? `הליד עודכן · מועד שיחה הבאה: ${sync.extra.next_call}` : "הליד עודכן · מועד שיחה הבאה נוקה");
+      } else {
+        flash("הליד עודכן");
+      }
       // Only when ownership actually moved to someone new. An edit that leaves
       // the owner untouched, or clears it, is not a handover worth an email.
       const newOwner = String(data.owner == null ? "" : data.owner).trim().toLowerCase();
@@ -1125,7 +1248,15 @@ export default function App() {
         <header style={{ ...styles.topbar, ...(isMobile ? styles.topbarMobile : {}) }}>
           <div style={styles.searchWrap}>
             <Search size={18} color="#94A3B8" />
-            <input style={styles.search} placeholder={isMobile ? "חיפוש…" : "חיפוש לפי שם, טלפון, אימייל, מפנה…"} value={query} onChange={(e) => setQuery(e.target.value)} />
+            <input ref={searchRef} style={styles.search} placeholder={isMobile ? "חיפוש…" : "חיפוש לפי שם, טלפון, אימייל, מפנה…"} value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
+            {query && (
+              <button className="search-clear" style={styles.searchClear} onClick={() => { setQuery(""); if (searchRef.current) searchRef.current.focus(); }}
+                title="נקה חיפוש" aria-label="נקה חיפוש">
+                <X size={15} />
+              </button>
+            )}
           </div>
           <button style={styles.refreshBtn} onClick={refresh} title="רענן" aria-label="רענן">
             <RefreshCw size={16} className={refreshing || status === "loading" ? "spin" : ""} />
@@ -1166,7 +1297,7 @@ export default function App() {
           )}
           {status === "ready" && view === "dashboard" && <Analytics stats={stats} leads={filtered} allLeads={leads} onOpen={setSelected} onFilterClick={goToFunnelFilter} session={session} flash={flash} />}
           {status === "ready" && view === "pipeline" && (
-            <Pipeline leads={pipelineFiltered} onOpen={setSelected} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
+            <Pipeline leads={pipelineFiltered} allLeads={leads} onOpen={setSelected} onSave={updateLead} canEdit={usersValue.canEdit} onMove={moveLead} dragId={dragId} setDragId={setDragId} isMobile={isMobile} filters={pf} onFiltersChange={setPf} onSnooze={snoozeCall} onContacted={markContacted} />
           )}
           {status === "ready" && view === "tasks" && (
             <TasksBoard leads={leads} session={session} onOpen={setSelected} onToggle={toggleTask} onSnooze={snoozeTask} flash={flash} />
@@ -2411,6 +2542,20 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
         <Kpi icon={<Wallet size={20} />} tint="#F59E0B" label="התחייבו / סגרו" value={fmtMoney(stats.committed)} onClick={() => onFilterClick(["interested", "closed"])} />
         <Kpi icon={<Clock size={20} />} tint="#EF4444" label={`תקועים ${STAGE_AGE_LIMIT}+ ימים`} value={stats.stuck} onClick={() => onFilterClick(FUNNEL_STAGES, true)} />
       </div>
+      <div style={{ ...styles.callsDivider, marginTop: 6 }}>
+        <span style={styles.callsDividerLine} />
+        <span style={styles.callsDividerLabel}><Phone size={14} /> מעקב שיחות</span>
+        <span style={styles.callsDividerLine} />
+      </div>
+      <div style={styles.dashGrid} className="dash-grid">
+        <CallList title="שיחות שעבר זמנן" tint="#EF4444" icon={<Clock size={17} />} items={overdue} emptyText="אין שיחות באיחור 🎉" onOpen={onOpen} />
+        <CallList title="שיחות קרובות" tint={KAPPA.teal} icon={<CalendarClock size={17} />} items={upcoming} emptyText="אין שיחות מתוזמנות" onOpen={onOpen} />
+      </div>
+      <div style={styles.callsDivider}>
+        <span style={styles.callsDividerLine} />
+        <span style={styles.callsDividerLabel}><LayoutGrid size={14} /> תמונת מצב לידים</span>
+        <span style={styles.callsDividerLine} />
+      </div>
       <div style={styles.dashGrid} className="dash-grid">
         <div style={styles.card}>
           <div style={styles.cardHead}><h3 style={styles.cardTitle}>פילוח לפי שלב</h3></div>
@@ -2444,21 +2589,18 @@ function Dashboard({ stats, leads, onOpen, onFilterClick }) {
           </div>
         </div>
       </div>
-      <div style={styles.callsDivider}>
-        <span style={styles.callsDividerLine} />
-        <span style={styles.callsDividerLabel}><Phone size={14} /> מעקב שיחות</span>
-        <span style={styles.callsDividerLine} />
-      </div>
-      <div style={styles.dashGrid} className="dash-grid">
-        <CallList title="שיחות שעבר זמנן" tint="#EF4444" icon={<Clock size={17} />} items={overdue} emptyText="אין שיחות באיחור 🎉" onOpen={onOpen} />
-        <CallList title="שיחות קרובות" tint={KAPPA.teal} icon={<CalendarClock size={17} />} items={upcoming} emptyText="אין שיחות מתוזמנות" onOpen={onOpen} />
-      </div>
     </div>
   );
 }
 
 // A dashboard block listing leads by their next_call date.
+// Now sits at the top of the dashboard, so a long backlog is capped (with a
+// "show all") instead of pushing the rest of the dashboard off screen.
+const CALL_LIST_LIMIT = 6;
 function CallList({ title, tint, icon, items, emptyText, onOpen }) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? items : items.slice(0, CALL_LIST_LIMIT);
+  const hidden = items.length - visible.length;
   return (
     <div style={{ ...styles.callCard, borderTop: `4px solid ${tint}` }}>
       <div style={styles.callCardHead}>
@@ -2468,7 +2610,7 @@ function CallList({ title, tint, icon, items, emptyText, onOpen }) {
       </div>
       <div>
         {items.length === 0 && <div style={styles.callEmpty}>{emptyText}</div>}
-        {items.map(({ lead, date }) => {
+        {visible.map(({ lead, date }) => {
           const st = stageOf(lead.stage);
           const days = Math.round((date - startOfToday()) / 86400000);
           const when = days === 0 ? "היום" : days < 0 ? `לפני ${Math.abs(days)} ימים` : `בעוד ${days} ימים`;
@@ -2484,6 +2626,11 @@ function CallList({ title, tint, icon, items, emptyText, onOpen }) {
             </button>
           );
         })}
+        {items.length > CALL_LIST_LIMIT && (
+          <button style={styles.callMoreBtn} onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "הצג פחות ▲" : `הצג עוד ${hidden} ▼`}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2528,8 +2675,20 @@ function FilterDateInput({ value, onChange }) {
   );
 }
 
-function PipelineFilterBar({ filters, onChange, isMobile }) {
-  const [open, setOpen] = useState(null); // null | 'created' | 'other' | 'stage'
+function PipelineFilterBar({ filters, onChange, isMobile, allLeads = [] }) {
+  const [open, setOpen] = useState(null); // null | 'created' | 'other' | 'stage' | 'campaign'
+  const { all: knownCampaigns } = useCampaigns();
+  // Every campaign in the managed list, plus any free-text campaign actually
+  // carried by a lead (the "אחר" option), so no lead is unreachable by filter.
+  const campaignOptions = useMemo(() => {
+    const counts = {};
+    allLeads.forEach((l) => { const k = campaignKey(l); counts[k] = (counts[k] || 0) + 1; });
+    const names = knownCampaigns.slice();
+    Object.keys(counts).forEach((k) => { if (k !== NO_CAMPAIGN && !names.includes(k)) names.push(k); });
+    const out = names.map((n) => ({ id: n, label: n, count: counts[n] || 0 }));
+    if (counts[NO_CAMPAIGN]) out.push({ id: NO_CAMPAIGN, label: "ללא קמפיין", count: counts[NO_CAMPAIGN] });
+    return out;
+  }, [allLeads, knownCampaigns]);
   const wrapRef = useRef(null);
   useEffect(() => {
     if (!open) return;
@@ -2541,11 +2700,15 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
   const hasCreated = !!(filters.createdFrom || filters.createdTo);
   const hasOther = !!(filters.dateFrom || filters.dateTo);
   const hasStages = filters.stages.length > 0;
-  const anyActive = hasCreated || hasOther || hasStages || filters.stuck;
+  const hasCampaigns = filters.campaigns.length > 0;
+  const anyActive = hasCreated || hasOther || hasStages || hasCampaigns || filters.stuck;
   const dateFieldLabel = (DATE_FILTER_FIELDS.find((f) => f.id === filters.dateField) || DATE_FILTER_FIELDS[0]).label;
 
   const toggleStage = (id) => {
     onChange((f) => ({ ...f, stages: f.stages.includes(id) ? f.stages.filter((s) => s !== id) : [...f.stages, id] }));
+  };
+  const toggleCampaign = (id) => {
+    onChange((f) => ({ ...f, campaigns: f.campaigns.includes(id) ? f.campaigns.filter((c) => c !== id) : [...f.campaigns, id] }));
   };
 
   return (
@@ -2615,6 +2778,24 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
         )}
       </div>
 
+      <div style={styles.filterBtnWrap}>
+        <button style={{ ...styles.filterBtn, ...(hasCampaigns ? styles.filterBtnActive : {}) }} onClick={() => setOpen(open === "campaign" ? null : "campaign")}>
+          <Megaphone size={14} />קמפיין{hasCampaigns ? ` (${filters.campaigns.length})` : ""}
+        </button>
+        {open === "campaign" && (
+          <div style={{ ...styles.filterPopover, maxHeight: 340, overflowY: "auto" }}>
+            {campaignOptions.map((c) => (
+              <label key={c.id} style={styles.filterCheckRow}>
+                <input type="checkbox" checked={filters.campaigns.includes(c.id)} onChange={() => toggleCampaign(c.id)} />
+                <span style={{ flex: 1 }}>{c.label}</span>
+                <span style={styles.filterCheckCount}>{c.count}</span>
+              </label>
+            ))}
+            {hasCampaigns && <button style={styles.filterPopClear} onClick={() => onChange((f) => ({ ...f, campaigns: [] }))}>נקה בחירה</button>}
+          </div>
+        )}
+      </div>
+
       <button
         style={{ ...styles.filterBtn, ...(filters.stuck ? styles.filterBtnActive : {}) }}
         onClick={() => onChange((f) => ({ ...f, stuck: !f.stuck }))}>
@@ -2622,7 +2803,7 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
       </button>
 
       {anyActive && (
-        <button style={styles.filterClearAll} onClick={() => onChange((f) => ({ ...f, createdFrom: "", createdTo: "", dateFrom: "", dateTo: "", stages: [], stuck: false }))}>
+        <button style={styles.filterClearAll} onClick={() => onChange((f) => ({ ...f, createdFrom: "", createdTo: "", dateFrom: "", dateTo: "", stages: [], campaigns: [], stuck: false }))}>
           נקה סינון
         </button>
       )}
@@ -2631,7 +2812,7 @@ function PipelineFilterBar({ filters, onChange, isMobile }) {
 }
 
 // ============ Pipeline ============
-function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters, onFiltersChange, onSnooze, onContacted }) {
+function Pipeline({ leads, allLeads = [], onOpen, onMove, onSave, canEdit, dragId, setDragId, isMobile, filters, onFiltersChange, onSnooze, onContacted }) {
   const [mode, setMode] = useState("kanban"); // kanban | list
   const [drag, setDrag] = useState(null); // { id, x, y, w, offX, offY, lead }
   const [overStage, setOverStage] = useState(null);
@@ -2703,7 +2884,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
             <h1 style={styles.pageTitle}>לידים</h1>
             <p style={styles.pageSub}>{isMobile ? "הקש על ליד לפתיחה ושינוי שלב" : (mode === "kanban" ? "גרור כרטיס בין שלבים כדי לעדכן סטטוס" : "לחץ על כותרת עמודה כדי למיין")}</p>
           </div>
-          <PipelineFilterBar filters={filters} onChange={onFiltersChange} isMobile={isMobile} />
+          <PipelineFilterBar filters={filters} onChange={onFiltersChange} isMobile={isMobile} allLeads={allLeads} />
         </div>
         <div style={styles.viewToggle}>
           <button onClick={() => setMode("kanban")} style={{ ...styles.toggleBtn, ...(mode === "kanban" ? styles.toggleActive : {}) }}>
@@ -2754,7 +2935,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
           })}
         </div>
       ) : (
-        <ListView leads={leads} onOpen={onOpen} onMove={onMove} isMobile={isMobile} onSnooze={onSnooze} onContacted={onContacted} />
+        <ListView leads={leads} onOpen={onOpen} onMove={onMove} onSave={onSave} canEdit={canEdit} isMobile={isMobile} onSnooze={onSnooze} onContacted={onContacted} />
       )}
 
       {drag && (
@@ -2778,7 +2959,7 @@ function Pipeline({ leads, onOpen, onMove, dragId, setDragId, isMobile, filters,
 // A flat, sortable table of every lead in the current filter. Unlike the board
 // it is NOT grouped by stage — it exists to answer "who owes me a call", "who
 // is the biggest", "who went quiet", which grouping by stage hides.
-function ListView({ leads, onOpen, onMove, isMobile, onSnooze, onContacted }) {
+function ListView({ leads, onOpen, onMove, onSave, canEdit, isMobile, onSnooze, onContacted }) {
   const [sort, setSort] = useState({ key: "next_call", dir: "asc" });
   const cols = [
     { key: "name", label: "שם" },
@@ -2848,10 +3029,23 @@ function ListView({ leads, onOpen, onMove, isMobile, onSnooze, onContacted }) {
                     {STAGES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
                   </select>
                 </td>
-                <td style={{ ...styles.lTd, color: "#8695A8" }}>{l.campaign || "—"}</td>
+                <td style={{ ...styles.lTd, color: "#8695A8" }}>
+                  {l.campaign || "—"}
+                  {String(l.campaign || "").trim() === REFERRAL_CAMPAIGN && String(l.referrer || "").trim() && (
+                    <span style={styles.lReferrer}> · {String(l.referrer).trim()}</span>
+                  )}
+                </td>
                 <td style={{ ...styles.lTd, fontWeight: 700, direction: "ltr", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmtMoney(l.amount)}</td>
-                <td style={{ ...styles.lTd, color: due ? "#EF4444" : KAPPA.graphite, fontWeight: due ? 700 : 500 }}>{l.next_call || "—"}</td>
-                <td style={{ ...styles.lTd, color: "#8695A8" }}>{l.last_contact || "—"}</td>
+                <td style={{ ...styles.lTd, color: due ? "#EF4444" : KAPPA.graphite, fontWeight: due ? 700 : 500 }}>
+                  {canEdit && onSave
+                    ? <InlineDate value={l.next_call || ""} onCommit={(v) => onSave({ ...l, next_call: v })} />
+                    : (l.next_call || "—")}
+                </td>
+                <td style={{ ...styles.lTd, color: "#8695A8" }}>
+                  {canEdit && onSave
+                    ? <InlineDate value={l.last_contact || ""} onCommit={(v) => onSave({ ...l, last_contact: v })} />
+                    : (l.last_contact || "—")}
+                </td>
                 <td style={styles.lTd}>
                   {age == null ? "—" : <span style={{ ...styles.ageTag, ...(stuck ? styles.ageTagStuck : {}) }}>{age}</span>}
                 </td>
@@ -3202,6 +3396,28 @@ function UsersAdmin({ session, flash, leads }) {
 // ============ Tasks ============
 // Every open task across every lead, in one list. This is the screen a sales
 // person lives in: what is due today, what slipped, and whose it is.
+// The "done" control for a task: a real, framed checkbox with its action
+// written next to it, so it reads as something to click rather than a status
+// icon. Done → filled green with "בוצע"; hovering a done task offers the undo.
+function TaskCheck({ done, onToggle, compact }) {
+  const { canEdit } = useUsers();
+  return (
+    <button
+      className={`task-check${done ? " is-done" : ""}`}
+      style={{ ...styles.taskCheckBtn, ...(compact ? styles.taskCheckBtnCompact : {}), ...(done ? styles.taskCheckBtnDone : {}), cursor: canEdit ? "pointer" : "not-allowed" }}
+      onClick={() => canEdit && onToggle()} disabled={!canEdit}
+      role="checkbox" aria-checked={done}
+      title={done ? "לחץ כדי להחזיר את המשימה לפתוחה" : "לחץ כדי לסמן שהמשימה בוצעה"}>
+      <span className="task-check-box" style={{ ...styles.taskCheckBox, ...(done ? styles.taskCheckBoxDone : {}) }}>
+        {done && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>}
+      </span>
+      <span className="task-check-label" style={{ ...styles.taskCheckLabel, color: done ? "#059669" : KAPPA.graphite }}>
+        {done ? "בוצע" : "סמן כבוצע"}
+      </span>
+    </button>
+  );
+}
+
 function TasksBoard({ leads, session, onOpen, onToggle, onSnooze, flash }) {
   const { label: typeLabel } = useTaskTypes();
   const me = (session && session.email) || "";
@@ -3262,10 +3478,7 @@ function TasksBoard({ leads, session, onOpen, onToggle, onSnooze, flash }) {
             const isToday = !task.done && due && due.getTime() === today.getTime();
             return (
               <div key={lead.id + task.id} style={styles.taskRow}>
-                <button style={styles.taskCheck} onClick={() => onToggle(lead, task.id)}
-                  aria-label={task.done ? "סמן כלא הושלמה" : "סמן כהושלמה"} title={task.done ? "החזר לפתוחה" : "סיים"}>
-                  <CheckCircle2 size={20} color={task.done ? "#10B981" : "#CBD5E1"} />
-                </button>
+                <TaskCheck done={!!task.done} onToggle={() => onToggle(lead, task.id)} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ ...styles.taskTitle, textDecoration: task.done ? "line-through" : "none", color: task.done ? "#94A3B8" : KAPPA.ink }}>
                     {task.title}
@@ -3468,9 +3681,7 @@ function TasksBlock({ lead, owners, session, onSaveTasks, onNotify }) {
         const late = !t.done && isDue(t.due);
         return (
           <div key={t.id} style={styles.taskMini}>
-            <button style={styles.taskCheck} onClick={() => toggle(t.id)} aria-label={t.done ? "החזר לפתוחה" : "סיים"}>
-              <CheckCircle2 size={18} color={t.done ? "#10B981" : "#CBD5E1"} />
-            </button>
+            <TaskCheck done={!!t.done} onToggle={() => toggle(t.id)} compact />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ ...styles.taskMiniTitle, textDecoration: t.done ? "line-through" : "none", color: t.done ? "#94A3B8" : KAPPA.ink }}>{t.title}</div>
               <div style={styles.taskMiniMeta}>
@@ -3701,7 +3912,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
   const { canEdit, isAdmin } = useUsers();
   const [editing, setEditing] = useState(false);
   const [maximized, setMaximized] = useState(false);
-  const [f, setF] = useState(lead);
+  const [f, setF] = useState(() => withDisplayPhone(lead));
   const [invRows, setInvRows] = useState(() => parseInvestments(lead));
   const [saving, setSaving] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -3720,13 +3931,13 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
   // True once anything in the edit form differs from the stored lead — used to
   // guard against losing work on a stray click outside the drawer or an Esc.
   const dirty = useMemo(
-    () => JSON.stringify(f) !== JSON.stringify(lead) ||
+    () => JSON.stringify(f) !== JSON.stringify(withDisplayPhone(lead)) ||
           JSON.stringify(invRows) !== JSON.stringify(parseInvestments(lead)),
     [f, invRows, lead]
   );
 
-  const startEdit = () => { setF(lead); setInvRows(parseInvestments(lead)); setEditing(true); };
-  const cancel = () => { setConfirmDiscard(false); setEditing(false); setF(lead); setInvRows(parseInvestments(lead)); };
+  const startEdit = () => { setF(withDisplayPhone(lead)); setInvRows(parseInvestments(lead)); setEditing(true); };
+  const cancel = () => { setConfirmDiscard(false); setEditing(false); setF(withDisplayPhone(lead)); setInvRows(parseInvestments(lead)); };
   const requestCancel = () => { if (dirty) setConfirmDiscard(true); else cancel(); };
 
   // Esc closes the drawer / leaves edit mode (with the same discard guard).
@@ -3870,7 +4081,7 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
             );
             const contactBlock = (
               <div style={styles.contactRow}>
-                {lead.phone && <a href={`tel:${lead.phone}`} style={styles.contactBtn}><Phone size={16} />{lead.phone}</a>}
+                {lead.phone && <a href={`tel:${fmtPhone(lead.phone)}`} style={styles.contactBtn}><Phone size={16} />{fmtPhone(lead.phone)}</a>}
                 {lead.email && (
                   isMobile
                     ? <a href={`mailto:${lead.email}`} style={styles.contactBtn}><Mail size={16} />{lead.email}</a>
@@ -3879,13 +4090,16 @@ function LeadDrawer({ lead, onClose, onMove, onSave, onRequestDelete, session, o
               </div>
             );
             const detailBlock = (
-              <div style={styles.detailGrid}>
+              <div style={styles.detailGrid} className="detail-grid">
                 <Detail label="בעלים" value={lead.owner || "—"} />
                 <Detail label="קמפיין" value={lead.campaign || "—"} />
                 <Detail label="סכום כולל" value={fmtMoney(lead.amount)} />
-                <Detail label="מועד פגישה" value={lead.meeting_date || "—"} />
-                <Detail label="קשר אחרון" value={lead.last_contact || "—"} />
-                <Detail label="שיחה הבאה" value={lead.next_call || "—"} highlight={isDue(lead.next_call)} />
+                <DateDetail label="מועד פגישה" value={lead.meeting_date || ""} canEdit={canEdit}
+                  onCommit={(v) => onSave({ ...lead, meeting_date: v })} />
+                <DateDetail label="קשר אחרון" value={lead.last_contact || ""} canEdit={canEdit}
+                  onCommit={(v) => onSave({ ...lead, last_contact: v })} />
+                <DateDetail label="שיחה הבאה" value={lead.next_call || ""} highlight={isDue(lead.next_call)} canEdit={canEdit}
+                  onCommit={(v) => onSave({ ...lead, next_call: v })} />
               </div>
             );
             const reasonBlock = isLost && (
@@ -3980,6 +4194,96 @@ function Detail({ label, value, highlight }) {
       <div style={styles.detailLabel}>{label}</div>
       <div style={{ ...styles.detailValue, color: highlight ? "#EF4444" : KAPPA.ink }}>{value}</div>
     </div>
+  );
+}
+// A date detail in the lead card that can be changed in place (see InlineDate).
+function DateDetail({ label, value, highlight, canEdit, onCommit }) {
+  return (
+    <div style={styles.detail}>
+      <div style={styles.detailLabel}>{label}</div>
+      <div style={{ ...styles.detailValue, color: highlight ? "#EF4444" : KAPPA.ink }}>
+        {canEdit
+          ? <InlineDate value={value} onCommit={onCommit} placeholder="קבע תאריך" inputStyle={{ width: "100%", minWidth: 0 }} />
+          : (value || "—")}
+      </div>
+    </div>
+  );
+}
+
+// Click-to-edit date. Reads as plain text; one click opens the browser's date
+// picker and the chosen date is saved straight away — no "עריכה" round trip.
+// Typing is supported too: while a year is typed digit by digit the native
+// input reports years like 0002 / 0202, so only a plausible, complete date is
+// committed, and only after a short pause (or on blur / Enter). Esc cancels.
+function InlineDate({ value, onCommit, placeholder = "—", inputStyle, disabled }) {
+  const [editing, setEditing] = useState(false);
+  const [local, setLocal] = useState("");
+  // The latest typed value, read synchronously by blur/Enter — a blur can land
+  // before React re-renders with the new state, and reading stale state there
+  // would commit (or cancel) the wrong date.
+  const localRef = useRef("");
+  const inputRef = useRef(null);
+  const timer = useRef(null);
+  const committed = useRef(value || "");
+  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => { if (!editing) committed.current = value || ""; }, [value, editing]);
+  useEffect(() => {
+    if (!editing || !inputRef.current) return;
+    inputRef.current.focus();
+    try { if (inputRef.current.showPicker) inputRef.current.showPicker(); } catch { /* typing still works */ }
+  }, [editing]);
+
+  const plausible = (iso) => DATE_COMPLETE.test(iso) && Number(iso.slice(0, 4)) >= 2000 && Number(iso.slice(0, 4)) <= 2100;
+  const commit = (iso) => {
+    clearTimeout(timer.current);
+    const dmy = iso ? isoToDMY(iso) : "";
+    if (dmy === committed.current) return;
+    committed.current = dmy;
+    onCommit(dmy);
+  };
+  const open = (e) => {
+    e.stopPropagation();
+    if (disabled) return;
+    localRef.current = dmyToISO(value);
+    setLocal(localRef.current);
+    setEditing(true);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef} type="date" dir="ltr" value={local}
+        style={{ ...styles.inlineDateInput, ...(inputStyle || {}) }}
+        aria-label="בחירת תאריך"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          const iso = e.target.value;
+          localRef.current = iso;
+          setLocal(iso);
+          clearTimeout(timer.current);
+          if (plausible(iso)) timer.current = setTimeout(() => commit(iso), 600);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); clearTimeout(timer.current); setEditing(false); }
+        }}
+        onBlur={() => {
+          const cur = localRef.current;
+          if (plausible(cur)) commit(cur);
+          else if (cur === "") commit("");
+          else clearTimeout(timer.current);
+          setEditing(false);
+        }}
+      />
+    );
+  }
+  return (
+    <button type="button" className="inline-date" style={styles.inlineDateBtn} onClick={open} disabled={disabled}
+      title={disabled ? undefined : "לחץ לבחירת תאריך — נשמר מיד"}>
+      <span style={value ? undefined : styles.inlineDateEmpty}>{value || placeholder}</span>
+      {!disabled && <CalendarClock size={13} className="inline-date-icon" style={{ opacity: 0.4, flexShrink: 0 }} />}
+    </button>
   );
 }
 
@@ -4196,7 +4500,7 @@ function AddLead({ onClose, onSave, leads = [], session, owners = [] }) {
               <div>
                 <strong>ייתכן שהליד כבר קיים:</strong>
                 {dupes.map((d) => (
-                  <div key={d.id} style={styles.dupRow}>{d.name} · {d.phone || "—"} · {stageOf(d.stage).label}</div>
+                  <div key={d.id} style={styles.dupRow}>{d.name} · {fmtPhone(d.phone) || "—"} · {stageOf(d.stage).label}</div>
                 ))}
               </div>
             </div>
@@ -4353,6 +4657,14 @@ const css = `
   .kpi-clickable:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); transform: translateY(-1px); }
   .kpi-clickable:focus-visible { outline: 2px solid ${KAPPA.teal}; outline-offset: 2px; }
   .row-btn:hover { background: #F8FAFC; }
+  .task-check:not(:disabled):not(.is-done):hover { border-color: ${KAPPA.teal} !important; background: ${KAPPA.tealSoft} !important; }
+  .task-check:not(:disabled):not(.is-done):hover .task-check-box { border-color: ${KAPPA.teal} !important; }
+  .task-check:not(:disabled):not(.is-done):hover .task-check-label { color: ${KAPPA.tealDark} !important; }
+  .task-check.is-done:not(:disabled):hover { border-color: #6EE7B7 !important; }
+  .search-clear:hover { background: #CBD5E1 !important; color: ${KAPPA.ink} !important; }
+  .inline-date { transition: background .12s, border-color .12s; }
+  .inline-date:not(:disabled):hover { background: ${KAPPA.tealSoft} !important; border-color: ${KAPPA.teal}55 !important; }
+  .inline-date:not(:disabled):hover .inline-date-icon { opacity: 1 !important; color: ${KAPPA.tealDark} !important; }
   .table-row:hover { background: #F8FAFC; }
   .card-quick { opacity: 0; transition: opacity .12s; }
   .lead-card:hover .card-quick, .lead-card:focus-within .card-quick { opacity: 1; }
@@ -4384,6 +4696,7 @@ const css = `
     .journey-promo { padding: 14px 10px !important; }
     .drawer-body { padding: 16px 14px !important; }
     .task-add-grid { grid-template-columns: 1fr !important; }
+    .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
     .user-add-grid { grid-template-columns: 1fr !important; }
   }
 `;
@@ -4399,6 +4712,10 @@ const styles = {
   lTr: { borderBottom: "1px solid #F1F5F9", cursor: "pointer" },
   lTd: { padding: "12px 14px", fontSize: 15, color: KAPPA.graphite, verticalAlign: "middle", whiteSpace: "nowrap" },
   lTdName: { display: "flex", alignItems: "center", gap: 10 },
+  lReferrer: { color: KAPPA.graphite, fontWeight: 600 },
+  inlineDateBtn: { display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid transparent", background: "transparent", borderRadius: 7, padding: "3px 7px", margin: "-4px -8px", fontFamily: "inherit", fontSize: "inherit", fontWeight: "inherit", color: "inherit", cursor: "pointer", fontVariantNumeric: "tabular-nums", maxWidth: "calc(100% + 16px)" },
+  inlineDateEmpty: { color: "#94A3B8", fontWeight: 500 },
+  inlineDateInput: { fontFamily: FONT, fontSize: 14, padding: "5px 8px", borderRadius: 8, border: `1.5px solid ${KAPPA.teal}`, color: KAPPA.ink, background: "#fff", minWidth: 140 },
   lTableEmpty: { background: "#fff", borderRadius: 15, padding: "44px 20px", textAlign: "center", color: "#94A3B8", fontSize: 14, marginTop: 16 },
   ageTag: { display: "inline-block", minWidth: 26, textAlign: "center", padding: "2px 8px", borderRadius: 20, background: "#F1F5F9", color: "#64748B", fontSize: 12.5, fontWeight: 700 },
   ageTagStuck: { background: "#FEF2F2", color: "#B91C1C" },
@@ -4412,6 +4729,12 @@ const styles = {
   taskList: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
   taskRow: { display: "flex", alignItems: "center", gap: 12, padding: "13px 18px", borderTop: "1px solid #F1F5F9" },
   taskCheck: { border: "none", background: "transparent", cursor: "pointer", padding: 0, display: "grid", placeItems: "center", flexShrink: 0 },
+  taskCheckBtn: { display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0, border: "1.5px solid #CBD5E1", background: "#fff", borderRadius: 9, padding: "6px 11px 6px 12px", fontFamily: FONT, transition: "border-color .15s, background .15s", minWidth: 112 },
+  taskCheckBtnCompact: { padding: "5px 9px 5px 10px", minWidth: 104 },
+  taskCheckBtnDone: { borderColor: "#A7F3D0", background: "#ECFDF5" },
+  taskCheckBox: { width: 20, height: 20, borderRadius: 6, border: "2px solid #94A3B8", background: "#fff", display: "grid", placeItems: "center", flexShrink: 0, transition: "all .15s" },
+  taskCheckBoxDone: { background: "#10B981", borderColor: "#10B981" },
+  taskCheckLabel: { fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" },
   taskTitle: { fontSize: 15, fontWeight: 600 },
   taskMeta: { fontSize: 12.5, color: "#94A3B8", marginTop: 3, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" },
   taskLeadLink: { border: "none", background: "none", padding: 0, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: KAPPA.tealDark, cursor: "pointer" },
@@ -4462,7 +4785,8 @@ const styles = {
   main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   topbar: { height: 66, background: "#fff", borderBottom: "1px solid #EAEEF3", display: "flex", alignItems: "center", gap: 12, padding: "0 26px", flexShrink: 0 },
   searchWrap: { display: "flex", alignItems: "center", gap: 9, background: "#F4F6F9", borderRadius: 10, padding: "9px 14px", flex: 1, maxWidth: 440, minWidth: 0 },
-  search: { border: "none", background: "transparent", outline: "none", fontSize: 14, flex: 1, fontFamily: FONT, color: KAPPA.ink },
+  search: { border: "none", background: "transparent", outline: "none", fontSize: 14, flex: 1, minWidth: 0, fontFamily: FONT, color: KAPPA.ink },
+  searchClear: { width: 24, height: 24, borderRadius: "50%", border: "none", background: "#E2E8F0", color: "#64748B", display: "grid", placeItems: "center", cursor: "pointer", padding: 0, flexShrink: 0 },
   refreshBtn: { width: 38, height: 38, borderRadius: 9, border: "1px solid #EAEEF3", background: "#fff", display: "grid", placeItems: "center", cursor: "pointer", color: KAPPA.graphite },
   dueBadge: { display: "flex", alignItems: "center", gap: 7, background: "#FEF2F2", color: "#EF4444", padding: "8px 13px", borderRadius: 9, fontSize: 13, fontWeight: 700 },
   userChip: { display: "flex", alignItems: "center", gap: 8, background: "#F4F6F9", borderRadius: 30, padding: "5px 6px 5px 10px", flexShrink: 0 },
@@ -4583,6 +4907,7 @@ const styles = {
   filterPopClear: { alignSelf: "flex-start", background: "none", border: "none", color: KAPPA.tealDark, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, padding: 0 },
   filterCheckRow: { display: "flex", alignItems: "center", gap: 8, padding: "6px 2px", fontSize: 13, color: KAPPA.ink, cursor: "pointer" },
   filterCheckDot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
+  filterCheckCount: { fontSize: 12, color: "#94A3B8", fontVariantNumeric: "tabular-nums", marginInlineStart: 12 },
   filterClearAll: { background: "none", border: "none", color: "#94A3B8", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, textDecoration: "underline", padding: "8px 2px" },
   filterDateInput: { width: "100%", padding: "8px 8px", borderRadius: 8, border: "1.5px solid #E2E8F0", fontSize: 12.5, fontFamily: FONT, color: KAPPA.ink, background: "#fff" },
   listWrap: { display: "flex", flexDirection: "column", gap: 20, marginTop: 16 },
@@ -4613,6 +4938,7 @@ const styles = {
   callCount: { fontSize: 13, fontWeight: 700, borderRadius: 20, padding: "2px 10px" },
   callEmpty: { padding: "22px", textAlign: "center", color: "#B6C2CE", fontSize: 13.5, fontWeight: 600 },
   callsDivider: { display: "flex", alignItems: "center", gap: 14, margin: "38px 0 18px" },
+  callMoreBtn: { display: "block", width: "100%", border: "none", borderTop: "1px solid #F1F5F9", background: "transparent", color: KAPPA.tealDark, fontSize: 13.5, fontWeight: 700, padding: "12px", cursor: "pointer", fontFamily: FONT },
   callsDividerLine: { flex: 1, height: 1, background: "#E2E8F0" },
   callsDividerLabel: { display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 700, color: "#8695A8", whiteSpace: "nowrap" },
   callCard: { background: "#fff", borderRadius: 15, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", overflow: "hidden" },
@@ -4671,10 +4997,10 @@ const styles = {
   drawerRef: { fontSize: 13.5, color: "#94A3B8" },
   contactRow: { display: "flex", gap: 10, marginBottom: 20 },
   contactBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px", borderRadius: 10, background: KAPPA.tealSoft, color: KAPPA.tealDark, textDecoration: "none", fontSize: 13.5, fontWeight: 600, direction: "ltr" },
-  detailGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: "#F1F5F9", borderRadius: 12, overflow: "hidden", marginBottom: 18 },
+  detailGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 1, background: "#F1F5F9", borderRadius: 12, overflow: "hidden", marginBottom: 18 },
   detail: { background: "#fff", padding: "13px 14px" },
   detailLabel: { fontSize: 12, color: "#94A3B8", marginBottom: 5, fontWeight: 500 },
-  detailValue: { fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
+  detailValue: { fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" },
   summaryBox: { background: "#F8FAFC", borderRadius: 12, padding: "15px 16px", marginBottom: 18 },
   summaryLabel: { fontSize: 12.5, color: "#94A3B8", fontWeight: 600, marginBottom: 7 },
   summaryText: { fontSize: 14, color: KAPPA.graphite, lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" },
