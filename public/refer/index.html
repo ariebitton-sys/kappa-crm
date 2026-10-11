@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>הפניית משקיע · קאפה</title>
+  <meta name="description" content="טופס להפניית משקיעים פוטנציאליים לקאפה השקעות נדל״ן" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta property="og:title" content="הפניית משקיע לקאפה" />
+  <meta property="og:description" content="מכירים מישהו שמתעניין בהשקעות נדל״ן בארה״ב? השאירו פרטים ונחזור אליו בהקדם." />
+  <meta property="og:image" content="https://kappa-crm.vercel.app/Logo.jpg" />
+  <meta property="og:type" content="website" />
+  <meta name="theme-color" content="#1FA9B8" />
+  <link rel="icon" type="image/jpeg" href="/Logo.jpg" />
+  <link rel="apple-touch-icon" href="/Logo.jpg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --teal: #1FA9B8;
+      --teal-dark: #178793;
+      --teal-soft: #E8F6F8;
+      --ink: #2A2E33;
+      --graphite: #4A4A4A;
+      --muted: #6B7785;
+      --line: #DCE3EA;
+      --bg: #EEF6F7;
+      --card: #FFFFFF;
+      --err: #C62828;
+      --err-soft: #FDECEC;
+      --ok: #0F9D6B;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Heebo", "Assistant", -apple-system, "Segoe UI", Arial, sans-serif;
+      font-size: 17px;
+      line-height: 1.6;
+      -webkit-text-size-adjust: 100%;
+    }
+    .band {
+      background: var(--teal);
+      padding: 26px 16px 70px;
+      text-align: center;
+    }
+    .logo-card {
+      display: inline-block;
+      background: #fff;
+      border-radius: 14px;
+      padding: 14px 24px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.10);
+    }
+    .logo-card img { display: block; width: 170px; height: auto; }
+    .wrap {
+      max-width: 600px;
+      margin: -48px auto 40px;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 18px;
+      box-shadow: 0 8px 30px rgba(23, 135, 147, 0.10);
+      padding: 30px 30px 28px;
+    }
+    h1 {
+      font-size: 27px;
+      font-weight: 800;
+      margin: 0 0 8px;
+      color: var(--ink);
+      line-height: 1.3;
+    }
+    .lead-in {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 19px;
+      font-weight: 800;
+      color: var(--teal-dark);
+      margin: 30px 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--teal-soft);
+    }
+    .section-title .num {
+      display: inline-grid;
+      place-items: center;
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--teal);
+      color: #fff;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .remembered {
+      font-size: 14.5px;
+      color: var(--muted);
+      margin: -6px 0 12px;
+    }
+    .remembered button {
+      background: none; border: none; padding: 0;
+      color: var(--teal-dark); font: inherit; font-weight: 700;
+      text-decoration: underline; cursor: pointer;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+    .field { margin-bottom: 18px; }
+    label.lbl {
+      display: block;
+      font-weight: 700;
+      font-size: 16px;
+      margin-bottom: 7px;
+      color: var(--graphite);
+    }
+    .req { color: var(--teal-dark); margin-inline-start: 2px; }
+    .opt { color: var(--muted); font-weight: 500; font-size: 14px; margin-inline-start: 4px; }
+    input[type=text], input[type=tel], input[type=email], textarea {
+      width: 100%;
+      font: inherit;
+      font-size: 17px;
+      color: var(--ink);
+      background: #fff;
+      border: 1.5px solid var(--line);
+      border-radius: 11px;
+      padding: 13px 15px;
+      transition: border-color .15s, box-shadow .15s;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input[dir=ltr] { text-align: right; }
+    textarea { min-height: 112px; resize: vertical; line-height: 1.55; }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--teal);
+      box-shadow: 0 0 0 4px rgba(31, 169, 184, 0.16);
+    }
+    input::placeholder, textarea::placeholder { color: #A3AEBA; }
+    .field.invalid input, .field.invalid textarea { border-color: var(--err); background: #FFFBFB; }
+    .err {
+      display: none;
+      color: var(--err);
+      font-size: 14.5px;
+      font-weight: 600;
+      margin-top: 6px;
+    }
+    .field.invalid .err { display: block; }
+    .consent {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      background: var(--teal-soft);
+      border: 1.5px solid transparent;
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin: 8px 0 6px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--graphite);
+    }
+    .consent input {
+      width: 22px; height: 22px;
+      margin: 2px 0 0;
+      flex-shrink: 0;
+      accent-color: var(--teal);
+      cursor: pointer;
+    }
+    .field.invalid .consent { border-color: var(--err); background: var(--err-soft); }
+    /* Visually hidden in place: an off-screen offset would widen an RTL page
+       (the overflow side is scrollable) and zoom mobile browsers out. */
+    .hp { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+          overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .submit {
+      width: 100%;
+      margin-top: 22px;
+      border: none;
+      border-radius: 12px;
+      background: var(--teal);
+      color: #fff;
+      font: inherit;
+      font-size: 19px;
+      font-weight: 800;
+      padding: 16px 20px;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(31, 169, 184, 0.30);
+      transition: background .15s, transform .1s;
+    }
+    .submit:hover { background: var(--teal-dark); }
+    .submit:active { transform: translateY(1px); }
+    .submit:focus-visible, .ghost:focus-visible { outline: 3px solid var(--teal-dark); outline-offset: 3px; }
+    .submit[disabled] { opacity: .65; cursor: wait; }
+    .privacy {
+      margin: 14px 0 0;
+      text-align: center;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .alert {
+      display: none;
+      margin-top: 16px;
+      background: var(--err-soft);
+      color: var(--err);
+      border-radius: 11px;
+      padding: 12px 14px;
+      font-weight: 600;
+      font-size: 15.5px;
+    }
+    .alert.show { display: block; }
+    .done { text-align: center; padding: 10px 4px 4px; }
+    .done .check {
+      width: 72px; height: 72px;
+      margin: 4px auto 16px;
+      border-radius: 50%;
+      background: #E6F7F0;
+      display: grid; place-items: center;
+    }
+    .done h2 { font-size: 26px; font-weight: 800; margin: 0 0 8px; }
+    .done p { margin: 0 0 6px; color: var(--muted); font-size: 17.5px; }
+    .ghost {
+      margin-top: 22px;
+      border: 1.5px solid var(--teal);
+      background: #fff;
+      color: var(--teal-dark);
+      border-radius: 12px;
+      font: inherit;
+      font-size: 17px;
+      font-weight: 800;
+      padding: 13px 26px;
+      cursor: pointer;
+    }
+    .ghost:hover { background: var(--teal-soft); }
+    .foot {
+      text-align: center;
+      color: #8A979D;
+      font-size: 13.5px;
+      margin-top: 18px;
+    }
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 3px solid rgba(255,255,255,.45);
+      border-top-color: #fff;
+      border-radius: 50%;
+      vertical-align: -3px;
+      margin-inline-end: 8px;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    [hidden] { display: none !important; }
+    @media (max-width: 560px) {
+      body { font-size: 16.5px; }
+      .band { padding: 20px 16px 62px; }
+      .logo-card img { width: 150px; }
+      .card { padding: 24px 18px 22px; border-radius: 16px; }
+      h1 { font-size: 24px; }
+      .row { grid-template-columns: 1fr; }
+      .section-title { margin-top: 26px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="band">
+    <div class="logo-card"><img src="/Logo.jpg" alt="Kappa Real Estate Investments" width="170" height="94" /></div>
+  </div>
+
+  <main class="wrap">
+    <div class="card">
+      <form id="form" novalidate>
+        <h1>הפניית משקיע לקאפה</h1>
+        <p class="lead-in">תודה שאתם ממליצים עלינו! השאירו את פרטי המשקיע ונחזור אליו בהקדם.</p>
+
+        <div class="section-title"><span class="num">1</span>הפרטים שלכם</div>
+        <p class="remembered" id="rememberedNote" hidden>מילאנו את הפרטים שלכם מההפניה הקודמת. <button type="button" id="notMe">לא אתם?</button></p>
+        <div class="row">
+          <div class="field" data-field="refName">
+            <label class="lbl" for="refName">שם מלא<span class="req" aria-hidden="true">*</span></label>
+            <input type="text" id="refName" name="refName" autocomplete="name" required aria-describedby="refName-err" />
+            <div class="err" id="refName-err">נא למלא את השם שלכם</div>
+          </div>
+          <div class="field" data-field="refPhone">
+            <label class="lbl" for="refPhone">טלפון<span class="req" aria-hidden="true">*</span></label>
+            <input type="tel" id="refPhone" name="refPhone" dir="ltr" inputmode="tel" autocomplete="tel" required aria-describedby="refPhone-err" />
+            <div class="err" id="refPhone-err">נא למלא מספר טלפון תקין</div>
+          </div>
+        </div>
+
+        <div class="section-title"><span class="num">2</span>פרטי המשקיע שאתם מפנים</div>
+        <div class="row">
+          <div class="field" data-field="name">
+            <label class="lbl" for="name">שם מלא<span class="req" aria-hidden="true">*</span></label>
+            <input type="text" id="name" name="name" autocomplete="off" required aria-describedby="name-err" />
+            <div class="err" id="name-err">נא למלא את שם המשקיע</div>
+          </div>
+          <div class="field" data-field="phone">
+            <label class="lbl" for="phone">טלפון<span class="req" aria-hidden="true">*</span></label>
+            <input type="tel" id="phone" name="phone" dir="ltr" inputmode="tel" autocomplete="off" required aria-describedby="phone-err" />
+            <div class="err" id="phone-err">נא למלא מספר טלפון תקין</div>
+          </div>
+        </div>
+        <div class="field" data-field="email">
+          <label class="lbl" for="email">אימייל<span class="opt">(לא חובה)</span></label>
+          <input type="email" id="email" name="email" dir="ltr" inputmode="email" autocomplete="off" aria-describedby="email-err" />
+          <div class="err" id="email-err">כתובת האימייל לא תקינה</div>
+        </div>
+        <div class="field" data-field="notes">
+          <label class="lbl" for="notes">מה כדאי שנדע?<span class="opt">(לא חובה)</span></label>
+          <textarea id="notes" name="notes" maxlength="1500" placeholder="למשל: איך אתם מכירים, מה מעניין אותו, מתי נוח לדבר איתו"></textarea>
+        </div>
+
+        <div class="field" data-field="consent">
+          <label class="consent" for="consent">
+            <input type="checkbox" id="consent" name="consent" required aria-describedby="consent-err" />
+            <span>המשקיע יודע שאני מעביר את פרטיו ומסכים שקאפה תיצור איתו קשר</span>
+          </label>
+          <div class="err" id="consent-err">נא לאשר שהמשקיע יודע ומסכים שניצור איתו קשר</div>
+        </div>
+
+        <div class="hp" aria-hidden="true">
+          <label for="website">אתר</label>
+          <input type="text" id="website" name="website" tabindex="-1" autocomplete="off" />
+        </div>
+
+        <button type="submit" class="submit" id="submitBtn">שליחת ההפניה</button>
+        <div class="alert" id="alert" role="alert"></div>
+        <p class="privacy">הפרטים נשמרים במערכת של קאפה ומשמשים רק ליצירת קשר בנוגע להשקעה.</p>
+      </form>
+
+      <div class="done" id="done" hidden tabindex="-1">
+        <div class="check" aria-hidden="true">
+          <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#0F9D6B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+        </div>
+        <h2>תודה! קיבלנו את ההפניה</h2>
+        <p id="doneText">נחזור אל המשקיע בהקדם.</p>
+        <p>תודה שאתם ממליצים עלינו.</p>
+        <button type="button" class="ghost" id="again">הפניית משקיע נוסף</button>
+      </div>
+    </div>
+    <div class="foot">קאפה השקעות נדל״ן · Kappa Real Estate Investments</div>
+  </main>
+
+  <script>
+  (function () {
+    // ------------------------------------------------------------------
+    // Public referral form. Creates a lead through the same n8n webhooks the
+    // CRM uses: add → then update with the owner and a call task (the add
+    // webhook stores a fixed column set without them) → notify the assignee.
+    // ------------------------------------------------------------------
+    var API_BASE = "https://ariebitton.app.n8n.cloud/webhook";
+    var API = {
+      add: API_BASE + "/crm/lead/add",
+      update: API_BASE + "/crm/lead/update",
+      notify: API_BASE + "/crm/notify"
+    };
+    var CAMPAIGN = "הפניה";
+    var SOURCE = "referral_form";
+    // Referred leads are followed up by the same default handler as any
+    // automatically created call task in the CRM.
+    var OWNER = "ofer@kappainv.com";
+    var CALL_TITLE = "שיחה";
+    var REMEMBER_KEY = "kappa_referrer";
+    var loadedAt = Date.now();
+
+    var $ = function (id) { return document.getElementById(id); };
+    var form = $("form"), done = $("done"), btn = $("submitBtn"), alertBox = $("alert");
+
+    // ---- dates (Israel time) ----
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    function fmtDMY(d) { return pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + "/" + d.getFullYear(); }
+    function israelNow() {
+      var parts = {};
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", hourCycle: "h23"
+      }).formatToParts(new Date()).forEach(function (p) { parts[p.type] = p.value; });
+      return {
+        date: new Date(Number(parts.year), Number(parts.month) - 1, Number(parts.day)),
+        hour: Number(parts.hour)
+      };
+    }
+    // Same working day if it arrives before 17:00 Sun–Thu; otherwise the next
+    // Sun–Thu, so it lands in that morning's "calls for today".
+    function nextCallDate() {
+      var now = israelNow();
+      var d = new Date(now.date.getTime());
+      if (now.hour >= 17) d.setDate(d.getDate() + 1);
+      while (d.getDay() === 5 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+      return d;
+    }
+
+    // ---- phones ----
+    function digits(s) { return String(s || "").replace(/\D/g, ""); }
+    function validPhone(s) { return digits(s).length >= 9; }
+    // Israeli numbers are stored as 05X-XXX-XXXX / 0X-XXX-XXXX: the dashes keep
+    // Google Sheets from turning them into numbers and dropping the leading 0.
+    function normPhone(s) {
+      var raw = String(s || "").trim();
+      var d = digits(raw);
+      if (/^972\d{8,9}$/.test(d) && /^\+?\s*972/.test(raw.replace(/[\s()-]/g, ""))) d = "0" + d.slice(3);
+      if (/^0[57]\d{8}$/.test(d)) return d.slice(0, 3) + "-" + d.slice(3, 6) + "-" + d.slice(6);
+      if (/^0[23489]\d{7}$/.test(d)) return d.slice(0, 2) + "-" + d.slice(2, 5) + "-" + d.slice(5);
+      if (/^[57]\d{8}$/.test(d) && raw.charAt(0) !== "+") return normPhone("0" + d);
+      return raw;
+    }
+    function validEmail(s) { return !s || /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s); }
+    function oneLine(s) { return String(s || "").replace(/\s*\n+\s*/g, " · ").replace(/\s+/g, " ").trim(); }
+
+    // ---- remembered referrer / personal link ----
+    function storageGet() { try { return JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null"); } catch (e) { return null; } }
+    function storageSet(v) { try { localStorage.setItem(REMEMBER_KEY, JSON.stringify(v)); } catch (e) { /* convenience only */ } }
+    function storageClear() { try { localStorage.removeItem(REMEMBER_KEY); } catch (e) { /* ignore */ } }
+    (function prefill() {
+      var params = new URLSearchParams(location.search);
+      var linkName = (params.get("ref") || "").trim();
+      var saved = storageGet();
+      if (saved && saved.name && (!linkName || linkName === saved.name)) {
+        $("refName").value = saved.name;
+        $("refPhone").value = saved.phone || "";
+        $("rememberedNote").hidden = false;
+      } else if (linkName) {
+        $("refName").value = linkName;
+      }
+    })();
+    $("notMe").addEventListener("click", function () {
+      storageClear();
+      $("refName").value = ""; $("refPhone").value = "";
+      $("rememberedNote").hidden = true;
+      $("refName").focus();
+    });
+
+    // ---- validation ----
+    var checks = {
+      refName: function () { return $("refName").value.trim().length >= 2; },
+      refPhone: function () { return validPhone($("refPhone").value); },
+      name: function () { return $("name").value.trim().length >= 2; },
+      phone: function () { return validPhone($("phone").value); },
+      email: function () { return validEmail($("email").value.trim()); },
+      consent: function () { return $("consent").checked; }
+    };
+    function setInvalid(key, bad) {
+      var wrap = form.querySelector('[data-field="' + key + '"]');
+      if (!wrap) return;
+      wrap.classList.toggle("invalid", bad);
+      var input = $(key);
+      if (input) input.setAttribute("aria-invalid", bad ? "true" : "false");
+    }
+    function validate() {
+      var firstBad = null;
+      Object.keys(checks).forEach(function (k) {
+        var ok = checks[k]();
+        setInvalid(k, !ok);
+        if (!ok && !firstBad) firstBad = k;
+      });
+      return firstBad;
+    }
+    // Clear a field's error as soon as it's fixed.
+    Object.keys(checks).forEach(function (k) {
+      var el = $(k);
+      el.addEventListener(k === "consent" ? "change" : "input", function () {
+        var wrap = form.querySelector('[data-field="' + k + '"]');
+        if (wrap && wrap.classList.contains("invalid") && checks[k]()) setInvalid(k, false);
+      });
+    });
+
+    function post(url, body) {
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      }).then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json().catch(function () { return {}; });
+      });
+    }
+    function newTaskId() { return "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+    function showDone(leadName) {
+      form.hidden = true;
+      done.hidden = false;
+      $("doneText").textContent = "נחזור אל " + leadName + " בהקדם.";
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      done.focus({ preventScroll: true });
+    }
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      alertBox.classList.remove("show");
+      var bad = validate();
+      if (bad) {
+        var el = $(bad);
+        el.focus();
+        if (el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
+      var leadName = $("name").value.trim();
+      // Bots: a filled hidden field or a near-instant submit get a fake success.
+      if ($("website").value || Date.now() - loadedAt < 2500) { showDone(leadName); return; }
+
+      var refName = $("refName").value.trim();
+      var refPhone = normPhone($("refPhone").value);
+      var today = fmtDMY(israelNow().date);
+      var due = fmtDMY(nextCallDate());
+      var notes = oneLine($("notes").value);
+      var summary = "[" + today + "] הופנה דרך טופס ההפניות ע״י " + refName + " (" + refPhone + ")";
+      if (notes) summary += "\n[" + today + "] מהמפנה: " + notes;
+
+      var lead = {
+        name: leadName,
+        phone: normPhone($("phone").value),
+        email: $("email").value.trim(),
+        stage: "new",
+        campaign: CAMPAIGN,
+        referrer: refName,
+        amount: "", track: "", investments: "",
+        meeting_date: "", last_contact: "",
+        next_call: due,
+        summary: summary,
+        source: SOURCE
+      };
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner" aria-hidden="true"></span>שולח…';
+
+      post(API.add, lead).then(function (created) {
+        storageSet({ name: refName, phone: refPhone });
+        var id = created && created.id != null ? String(created.id) : "";
+        showDone(leadName);
+        if (!id) return;
+        var task = {
+          id: newTaskId(), title: CALL_TITLE, type: "call", due: due, owner: OWNER,
+          done: false, created_at: today, auto: true
+        };
+        var full = Object.assign({}, lead, created, {
+          id: id, owner: OWNER, tasks: JSON.stringify([task]), stage_since: today
+        });
+        // The lead already exists at this point; these two only enrich it, so
+        // a failure here is not shown to the referrer.
+        post(API.update, full).then(function () {
+          var actorName = "טופס הפניות · " + refName;
+          post(API.notify, { event: "task_assigned", actor: "", payload: {
+            to: OWNER, task_title: CALL_TITLE, lead_name: leadName, due: due,
+            campaign: CAMPAIGN, actor_name: actorName
+          } }).catch(function () {});
+          post(API.notify, { event: "lead_new", actor: "", payload: {
+            lead_name: leadName, campaign: CAMPAIGN, actor_name: actorName
+          } }).catch(function () {});
+        }).catch(function () {});
+      }).catch(function () {
+        alertBox.textContent = "השליחה נכשלה. בדקו את החיבור לאינטרנט ונסו שוב בעוד רגע.";
+        alertBox.classList.add("show");
+      }).then(function () {
+        btn.disabled = false;
+        btn.textContent = "שליחת ההפניה";
+      });
+    });
+
+    $("again").addEventListener("click", function () {
+      ["name", "phone", "email", "notes"].forEach(function (k) { $(k).value = ""; setInvalid(k, false); });
+      $("consent").checked = false; setInvalid("consent", false);
+      var saved = storageGet();
+      $("rememberedNote").hidden = !(saved && saved.name);
+      loadedAt = Date.now();
+      done.hidden = true;
+      form.hidden = false;
+      window.scrollTo({ top: 0 });
+      $("name").focus();
+    });
+  })();
+  </script>
+</body>
+</html>
