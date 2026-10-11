@@ -4602,7 +4602,10 @@ function AddLead({ onClose, onSave, leads = [], session, owners = [] }) {
   const [f, setF] = useState({
     name: "", phone: "", email: "", campaign: activeCampaigns[0] || "", referrer: "",
     stage: "new", summary: "", next_call: "", meeting_date: "", last_contact: "",
-    owner: (session && session.email) || "",
+    // Ofer follows up new leads by default (same default as call tasks and the
+    // public referral form); falls back to the signed-in user if he isn't an
+    // assignable owner here.
+    owner: owners.includes(DEFAULT_TASK_OWNER) ? DEFAULT_TASK_OWNER : ((session && session.email) || ""),
   });
   const [invRows, setInvRows] = useState([{ track: "", amount: "", compound: false }]);
   const [saving, setSaving] = useState(false);
