@@ -190,6 +190,9 @@ const TASK_TYPES_FALLBACK = [
   { type_id: "doc", label: "מסמכים" },
 ];
 const OTHER_TASK = "other";
+// System task types that aren't rows in the TaskTypes tab.
+const REFERRAL_FEE_TYPE = "referral_fee";
+const BUILTIN_TASK_LABELS = { [OTHER_TASK]: "אחר", [REFERRAL_FEE_TYPE]: "דמי הפניה" };
 const DEFAULT_TASK_OWNER = "ofer@kappainv.com";
 
 // Notification catalogue. `admin` marks the ones only admins receive, and
@@ -305,6 +308,21 @@ const NO_CAMPAIGN = "__none";
 const campaignKey = (lead) => String((lead && lead.campaign) || "").trim() || NO_CAMPAIGN;
 // The referral campaign — the list view shows who referred the lead next to it.
 const REFERRAL_CAMPAIGN = "הפניה";
+const isReferralLead = (lead) => String((lead && lead.campaign) || "").trim() === REFERRAL_CAMPAIGN;
+// Leads from the public referral form carry the referrer's phone in their first
+// note ("… ע״י NAME (PHONE)"); it goes into the fee task so it can be paid
+// without digging.
+const referralFeeTitle = (lead) => {
+  const who = String(lead.referrer || "").trim() || "גורם מפנה";
+  const m = String(lead.summary || "").match(/ע״י [^\n(]+\(([^)\n]+)\)/);
+  const phone = m ? m[1].replace(/[\u2066-\u2069]/g, "").trim() : "";
+  // The number is wrapped in a left-to-right isolate so it doesn't scramble
+  // inside right-to-left text (in the CRM and in the notification email).
+  return `תשלום דמי הפניה: ${who}${phone ? ` · \u2066${phone}\u2069` : ""}`;
+};
+// How long after a manual move into / out of "סגר" the referral-fee rule waits
+// (the toast's "בטל" stays on screen for 7 seconds).
+const RECENT_MOVE_MS = 8000;
 
 // Campaigns are shared by the lead forms, the stats tabs and the management
 // screen, so they're provided via context rather than threaded through every
@@ -494,6 +512,9 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const isMobile = useIsMobile();
   const [status, setStatus] = useState("loading"); // loading | ready | error
+  // Bumped each time fresh lead data arrives from the server, so rules that
+  // must only act on server truth (not on optimistic local edits) can run.
+  const [serverTick, setServerTick] = useState(0);
   const [refreshing, setRefreshing] = useState(false); // manual refresh — spins the button only
   const [view, setView] = useState("dashboard");
   const [selected, setSelected] = useState(null);
@@ -687,7 +708,9 @@ export default function App() {
       // type was deleted still shows something meaningful instead of "אחר".
       label: (id) => {
         const hit = rows.find((t) => t.type_id === id);
-        return hit ? hit.label : (id ? String(id) : "אחר");
+        if (hit) return hit.label;
+        if (BUILTIN_TASK_LABELS[id]) return BUILTIN_TASK_LABELS[id];
+        return id ? String(id) : "אחר";
       },
       save: saveTaskType, remove: removeTaskType, reload: loadTaskTypes,
     };
@@ -783,6 +806,7 @@ export default function App() {
       const data = await res.json();
       const rows = (data.leads || []).map((l) => ({ ...l, id: String(l.id) }));
       setLeads(rows);
+      setServerTick((t) => t + 1);
       // Keep an open drawer on fresh data — the background refresh used to
       // update the list only, leaving `selected` frozen at load-time values.
       setSelected((cur) => {
@@ -986,6 +1010,12 @@ export default function App() {
           actor_name: (session && session.name) || "",
         });
       }
+      // Referral-fee rule (see the effect below): give the undo window time to
+      // pass, then re-read so the task is created / withdrawn from server data.
+      if ((stage === "closed" || fromStage === "closed") && before && isReferralLead(before)) {
+        recentMoves.current[id] = Date.now();
+        setTimeout(() => loadLeads(true), RECENT_MOVE_MS + 500);
+      }
       if (opts.resumeStage != null) {
         flash("ממשיך מהשלב האחרון — נשלחה תזכורת");
       } else {
@@ -1058,7 +1088,9 @@ export default function App() {
   };
 
   // update lead → POST /crm/lead/update
-  const updateLead = async (input) => {
+  // opts.message replaces the success toast; opts.notifyTask sends the usual
+  // "task assigned" email for a task this update created.
+  const updateLead = async (input, opts = {}) => {
     const prev = leads;
     const before = leads.find((l) => l.id === input.id);
     // Keep next_call and the lead's call tasks in step (see syncCallFields).
@@ -1072,7 +1104,10 @@ export default function App() {
         body: JSON.stringify(data),
       });
       if (!res.ok) throw new Error();
-      if (sync.created) {
+      if (opts.notifyTask) notifyAutoCallTask(opts.notifyTask, data.name || (before && before.name));
+      if (opts.message) {
+        flash(opts.message);
+      } else if (sync.created) {
         flash(`הליד עודכן · נוצרה משימת שיחה ל-${sync.created.due}`);
         notifyAutoCallTask(sync.created, data.name || (before && before.name));
       } else if (sync.extra.next_call !== undefined) {
@@ -1211,6 +1246,44 @@ export default function App() {
     updateLead({ ...lead, next_call: fmtDMY(base) });
   };
   const markContacted = (lead) => updateLead({ ...lead, last_contact: todayStr() });
+
+  // ---- Referral fee ----
+  // A lead that came in as a referral ("הפניה") and reaches "סגר" — by hand or
+  // when the investor journey completes — gets one task for Ofer: pay the
+  // referrer. Runs on fresh server data only, once per lead+stage per session.
+  // The task can only be marked done, never deleted, so it is never recreated;
+  // an open one is withdrawn if the lead leaves "סגר" before it was paid.
+  const recentMoves = useRef({});
+  const feeHandled = useRef(new Set());
+  useEffect(() => {
+    if (!serverTick || !usersValue.canEdit) return;
+    const now = Date.now();
+    leads.forEach((l) => {
+      if (now - (recentMoves.current[l.id] || 0) < RECENT_MOVE_MS) return; // still undoable
+      const tasks = parseTasks(l);
+      const fee = tasks.find((t) => t.type === REFERRAL_FEE_TYPE);
+      const key = `${l.id}:${l.stage}`;
+      if (l.stage === "closed" && isReferralLead(l) && !fee) {
+        if (feeHandled.current.has(key)) return;
+        feeHandled.current.add(key);
+        const owner = callTaskDefaults().owner;
+        const task = {
+          id: `fee_${l.id}`, title: referralFeeTitle(l), type: REFERRAL_FEE_TYPE,
+          due: todayStr(), owner, done: false, created_at: todayStr(), auto: true,
+        };
+        updateLead({ ...l, tasks: JSON.stringify([...tasks, task]) }, {
+          notifyTask: task,
+          message: `${l.name} סגר · נוצרה ל${ownerLabel(owner, userRows)} משימת תשלום דמי הפניה`,
+        });
+      } else if (l.stage !== "closed" && fee && !fee.done && fee.auto) {
+        if (feeHandled.current.has(key)) return;
+        feeHandled.current.add(key);
+        updateLead({ ...l, tasks: JSON.stringify(tasks.filter((t) => t.id !== fee.id)) }, {
+          message: `${l.name} כבר לא בסטטוס סגר · משימת דמי ההפניה הוסרה`,
+        });
+      }
+    });
+  }, [serverTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!session) {
     return <LoginScreen onCredential={handleGoogleCredential} error={authError} checking={authChecking} />;
@@ -3717,7 +3790,9 @@ function TasksBlock({ lead, owners, session, onSaveTasks, onNotify }) {
       <div style={styles.summaryLabel}>משימות</div>
       {sorted.length === 0 && <div style={styles.histEmpty}>אין משימות פתוחות לליד הזה.</div>}
       {sorted.map((t) => {
-        const late = !t.done && isDue(t.due);
+        // Late means before today; a task due today isn't late yet.
+        const dueDate = parseDMY(t.due);
+        const late = !t.done && !!dueDate && dueDate < startOfToday();
         return (
           <div key={t.id} style={styles.taskMini}>
             <TaskCheck done={!!t.done} onToggle={() => toggle(t.id)} compact />
@@ -3728,7 +3803,9 @@ function TasksBlock({ lead, owners, session, onSaveTasks, onNotify }) {
               </div>
             </div>
             {late && <span style={styles.taskLate}>באיחור</span>}
-            <button style={styles.taskDelete} onClick={() => remove(t.id)} aria-label="מחק משימה" title="מחק">×</button>
+            {t.type === REFERRAL_FEE_TYPE
+              ? <span style={styles.taskDeleteSpacer} title="משימת מערכת: אפשר לסמן כבוצע, לא למחוק" />
+              : <button style={styles.taskDelete} onClick={() => remove(t.id)} aria-label="מחק משימה" title="מחק">×</button>}
           </div>
         );
       })}
@@ -4921,6 +4998,7 @@ const styles = {
   taskMiniTitle: { fontSize: 14, fontWeight: 600 },
   taskMiniMeta: { fontSize: 12, color: "#94A3B8", marginTop: 2 },
   taskLate: { fontSize: 11.5, fontWeight: 700, color: "#B91C1C", background: "#FEF2F2", borderRadius: 6, padding: "2px 7px" },
+  taskDeleteSpacer: { display: "inline-block", width: 14, flexShrink: 0 },
   taskDelete: { border: "none", background: "transparent", color: "#CBD5E1", fontSize: 18, lineHeight: 1, cursor: "pointer", padding: "0 2px" },
   taskAddGrid: { display: "grid", gridTemplateColumns: "1.6fr 1fr 1.2fr", gap: 8, marginTop: 12 },
   taskAddFoot: { display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginTop: 8 },

@@ -505,7 +505,9 @@
       var today = fmtDMY(israelNow().date);
       var due = fmtDMY(nextCallDate());
       var notes = oneLine($("notes").value);
-      var summary = "[" + today + "] הופנה דרך טופס ההפניות ע״י " + refName + " (" + refPhone + ")";
+      // The phone sits in a left-to-right isolate so it reads correctly inside
+      // the Hebrew note.
+      var summary = "[" + today + "] הופנה דרך טופס ההפניות ע״י " + refName + " (\u2066" + refPhone + "\u2069)";
       if (notes) summary += "\n[" + today + "] מהמפנה: " + notes;
 
       var lead = {
